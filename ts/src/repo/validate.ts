@@ -27,6 +27,7 @@ import {
   errAdjacentInsert,
   errInvalidContributorId,
   errInvalidCommitMessage,
+  errInvalidJson,
 } from "../errors.js";
 
 // ---------------------------------------------------------------------------
@@ -60,17 +61,17 @@ export function validateRepository(data: unknown): Repository {
   if (!Array.isArray(frontierRaw)) {
     throw errFrontierNotCanonical();
   }
-  const frontier = parseVersionVectorArray(frontierRaw as unknown[], true);
+  const frontier = parseVersionVectorArray(frontierRaw, true);
 
   // Step 4: patches array
   const patchesRaw = raw["patches"];
   if (!Array.isArray(patchesRaw)) {
-    throw errRevisionNotPositiveSafeInteger("patches");
+    throw errInvalidJson();
   }
 
   // Parse all patches (static validation)
   const patches: Patch[] = [];
-  for (const p of patchesRaw as unknown[]) {
+  for (const p of patchesRaw) {
     patches.push(validatePatchStatic(p));
   }
 
@@ -103,7 +104,7 @@ export function validateRepository(data: unknown): Repository {
 
 function requireObject(v: unknown): Record<string, unknown> {
   if (typeof v !== "object" || v === null || Array.isArray(v)) {
-    throw errRevisionNotPositiveSafeInteger("structure");
+    throw errInvalidJson();
   }
   return v as Record<string, unknown>;
 }
@@ -169,7 +170,7 @@ function parseVersionVectorArray(
   let prevId: string | null = null;
 
   for (const entry of raw) {
-    if (!Array.isArray(entry) || (entry as unknown[]).length !== 2) {
+    if (!Array.isArray(entry) || entry.length !== 2) {
       throw errFrontierNotCanonical();
     }
     const [id, rev] = entry as [unknown, unknown];
@@ -234,7 +235,7 @@ function validatePatchStatic(raw: unknown): Patch {
   if (!Array.isArray(baseRaw)) {
     throw errFrontierNotCanonical();
   }
-  const base = parseVersionVectorArray(baseRaw as unknown[], true);
+  const base = parseVersionVectorArray(baseRaw, true);
 
   // message
   const message = p["message"];
@@ -245,11 +246,11 @@ function validatePatchStatic(raw: unknown): Patch {
 
   // changes
   const changesRaw = p["changes"];
-  if (!Array.isArray(changesRaw) || (changesRaw as unknown[]).length === 0) {
+  if (!Array.isArray(changesRaw) || changesRaw.length === 0) {
     throw errPatchChangesEmpty();
   }
   const changes: Change[] = [];
-  for (const c of changesRaw as unknown[]) {
+  for (const c of changesRaw) {
     changes.push(validateChangeStatic(c));
   }
 
@@ -264,7 +265,7 @@ function validatePatchStatic(raw: unknown): Patch {
   }
 
   return {
-    author: author as string,
+    author,
     revision: revision as number,
     base,
     message,
@@ -363,7 +364,7 @@ function validateEditStatic(raw: unknown): readonly DiffOp[] {
   const ops: DiffOp[] = [];
   let prevType: string | null = null;
 
-  for (const opRaw of raw as unknown[]) {
+  for (const opRaw of raw) {
     const op = requireObject(opRaw);
     const keys = Object.keys(op);
 
@@ -386,11 +387,11 @@ function validateEditStatic(raw: unknown): readonly DiffOp[] {
       }
       typedOp = { type: "delete", count: val as number };
     } else if (key === "insert") {
-      if (!Array.isArray(val) || (val as unknown[]).length === 0) {
+      if (!Array.isArray(val) || val.length === 0) {
         throw errInsertIsEmpty();
       }
       const tokens: string[] = [];
-      for (const tok of val as unknown[]) {
+      for (const tok of val) {
         if (typeof tok !== "string" || tok.length === 0) {
           throw errInsertIsEmpty();
         }
@@ -417,7 +418,7 @@ function validateEditStatic(raw: unknown): readonly DiffOp[] {
 // Sorting and structural checks
 // ---------------------------------------------------------------------------
 
-function checkPatchSorting(patches: Patch[]): void {
+function checkPatchSorting(patches: readonly Patch[]): void {
   for (let i = 1; i < patches.length; i++) {
     const prev = patches[i - 1]!;
     const curr = patches[i]!;
@@ -430,7 +431,7 @@ function checkPatchSorting(patches: Patch[]): void {
   }
 }
 
-function buildPatchMap(patches: Patch[]): Map<string, number> {
+function buildPatchMap(patches: readonly Patch[]): Map<string, number> {
   const map = new Map<string, number>();
   for (let i = 0; i < patches.length; i++) {
     const p = patches[i]!;
@@ -443,7 +444,7 @@ function dotKey(author: string, revision: number): string {
   return `${author}:${revision}`;
 }
 
-function checkCausalClosure(patches: Patch[], patchMap: Map<string, number>): void {
+function checkCausalClosure(patches: readonly Patch[], patchMap: Map<string, number>): void {
   for (const patch of patches) {
     for (const [author, revision] of patch.base) {
       if (!patchMap.has(dotKey(author, revision))) {
@@ -453,7 +454,10 @@ function checkCausalClosure(patches: Patch[], patchMap: Map<string, number>): vo
   }
 }
 
-function checkNoUnreachablePatches(patches: Patch[], frontier: ReadonlyMap<string, number>): void {
+function checkNoUnreachablePatches(
+  patches: readonly Patch[],
+  frontier: ReadonlyMap<string, number>,
+): void {
   for (const patch of patches) {
     const frontierRev = frontier.get(patch.author) ?? 0;
     if (patch.revision > frontierRev) {
@@ -463,7 +467,7 @@ function checkNoUnreachablePatches(patches: Patch[], frontier: ReadonlyMap<strin
   }
 }
 
-function checkRevisionContiguity(patches: Patch[], patchMap: Map<string, number>): void {
+function checkRevisionContiguity(patches: readonly Patch[], patchMap: Map<string, number>): void {
   for (const patch of patches) {
     const expectedBaseRev = patch.base.get(patch.author) ?? 0;
     if (patch.revision !== expectedBaseRev + 1) {
@@ -664,7 +668,7 @@ function validateAndApplyChange(
  * Full replay-based validation using topological sort with Snap-order tie-breaking.
  * SPEC §6.1: repeatedly find ready patches (bases fully integrated), choose least by Snap order.
  */
-function replayAndValidate(patches: Patch[], patchMap: Map<string, number>): void {
+function replayAndValidate(patches: readonly Patch[], patchMap: Map<string, number>): void {
   const integrated = new Set<string>();
   const treeCache = new Map<string, SimpleTree>();
   let currentTree: SimpleTree = new Map();
@@ -739,7 +743,7 @@ function replayAndValidate(patches: Patch[], patchMap: Map<string, number>): voi
  */
 function materializeBaseTree(
   base: ReadonlyMap<string, number>,
-  patches: Patch[],
+  patches: readonly Patch[],
   patchMap: Map<string, number>,
   treeCache: Map<string, SimpleTree>,
 ): SimpleTree {
@@ -769,7 +773,10 @@ function materializeBaseTree(
   const lastKey = dotKey(last.author, last.revision);
 
   if (treeCache.has(lastKey)) {
-    return treeCache.get(lastKey)!;
+    const cached = treeCache.get(lastKey);
+    if (cached !== undefined) {
+      return cached;
+    }
   }
 
   // Not cached yet — shouldn't happen if we process in order, but handle gracefully
@@ -783,7 +790,10 @@ function materializeBaseTree(
     if (localIntegrated.has(key)) continue;
 
     if (treeCache.has(key)) {
-      tree = new Map(treeCache.get(key)!);
+      const cached = treeCache.get(key);
+      if (cached !== undefined) {
+        tree = new Map(cached);
+      }
       localIntegrated.add(key);
       continue;
     }

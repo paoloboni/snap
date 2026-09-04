@@ -20,7 +20,6 @@ import { isText, tokenize } from "../core/tokens.js";
 import { diff } from "../core/diff.js";
 import { comparePaths } from "../core/path.js";
 import type { Change, Patch } from "../repo/model.js";
-import type { DiffOp } from "../core/diff.js";
 import type { Tree } from "../core/tree.js";
 import type { Repository } from "../repo/model.js";
 import type { VersionVector } from "../core/version.js";
@@ -81,7 +80,7 @@ function makeChange(
     const oldTokens = oldBytes === undefined ? [] : tokenize(oldBytes.toString("utf8"));
     const newTokens = tokenize(newBytes.toString("utf8"));
     const editScript = diff(oldTokens, newTokens);
-    return { type: "text", path, edit: editScript as readonly DiffOp[] };
+    return { type: "text", path, edit: editScript };
   }
 
   return { type: "put", path, content: newBytes.toString("base64") };

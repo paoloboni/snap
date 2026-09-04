@@ -4,7 +4,11 @@
 import * as fs from "node:fs/promises";
 import * as nodePath from "node:path";
 import { findRepository } from "../repo/store.js";
-import { errRepositoryAlreadyExists, errCannotInitializeInsideRepository } from "../errors.js";
+import {
+  errRepositoryAlreadyExists,
+  errCannotInitializeInsideRepository,
+  SnapError,
+} from "../errors.js";
 import { colorMode } from "../present/mode.js";
 import { S } from "../present/sgr.js";
 import { formatVersionString } from "../core/version.js";
@@ -40,12 +44,7 @@ export async function run(initPath: string, cwd: string): Promise<number> {
     }
   } catch (e: unknown) {
     // If it's a SnapError, re-throw
-    if (
-      e !== null &&
-      typeof e === "object" &&
-      "name" in e &&
-      (e as { name: string }).name === "SnapError"
-    ) {
+    if (e instanceof SnapError) {
       throw e;
     }
     // Otherwise: file doesn't exist, continue

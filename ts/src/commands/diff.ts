@@ -236,24 +236,26 @@ function renderDiffGeneric(
       continue;
     }
 
-    const oldIsText = oldBytes !== undefined && isText(oldBytes);
-    const newIsText = newBytes !== undefined && isText(newBytes);
-
     const oldLabel = oldBytes === undefined ? "/dev/null" : `a/${path}`;
     const newLabel = newBytes === undefined ? "/dev/null" : `b/${path}`;
 
-    if (oldBytes === undefined && newIsText) {
+    if (oldBytes === undefined && newBytes !== undefined && isText(newBytes)) {
       // New text file (or empty file)
-      const tokens = tokenize(newBytes!.toString("utf8"));
+      const tokens = tokenize(newBytes.toString("utf8"));
       out += renderTextBlock("/dev/null", `b/${path}`, [], tokens);
-    } else if (oldIsText && newBytes === undefined) {
+    } else if (oldBytes !== undefined && isText(oldBytes) && newBytes === undefined) {
       // Deleted text file
-      const tokens = tokenize(oldBytes!.toString("utf8"));
+      const tokens = tokenize(oldBytes.toString("utf8"));
       out += renderTextBlock(`a/${path}`, "/dev/null", tokens, []);
-    } else if (oldIsText && newIsText) {
+    } else if (
+      oldBytes !== undefined &&
+      isText(oldBytes) &&
+      newBytes !== undefined &&
+      isText(newBytes)
+    ) {
       // Text modified
-      const oldTokens = tokenize(oldBytes!.toString("utf8"));
-      const newTokens = tokenize(newBytes!.toString("utf8"));
+      const oldTokens = tokenize(oldBytes.toString("utf8"));
+      const newTokens = tokenize(newBytes.toString("utf8"));
       out += renderTextBlock(`a/${path}`, `b/${path}`, oldTokens, newTokens);
     } else {
       // Binary (created, deleted, or modified, or mixed text/binary)

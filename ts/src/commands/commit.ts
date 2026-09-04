@@ -17,7 +17,6 @@ import { isText, tokenize } from "../core/tokens.js";
 import { diff } from "../core/diff.js";
 import { comparePaths } from "../core/path.js";
 import type { Change, Patch } from "../repo/model.js";
-import type { DiffOp } from "../core/diff.js";
 import { colorMode } from "../present/mode.js";
 import { S } from "../present/sgr.js";
 
@@ -62,7 +61,7 @@ function makeChange(path: string, oldBytes: Buffer | undefined, newBytes: Buffer
       const oldTokens = oldBytes === undefined ? [] : tokenize(oldBytes.toString("utf8"));
       const newTokens = tokenize(newBytes.toString("utf8"));
       const editScript = diff(oldTokens, newTokens);
-      return { type: "text", path, edit: editScript as readonly DiffOp[] };
+      return { type: "text", path, edit: editScript };
     }
   }
 

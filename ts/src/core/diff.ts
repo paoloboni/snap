@@ -2,6 +2,7 @@
 // SPEC.md §5, PLAN.md §6.2 trap 4
 
 import type { Tokens } from "./tokens.js";
+import { coalesce } from "./script.js";
 
 export type DiffOp =
   | { type: "retain"; count: number }
@@ -9,42 +10,6 @@ export type DiffOp =
   | { type: "insert"; tokens: readonly string[] };
 
 export type DiffScript = readonly DiffOp[];
-
-// ---------------------------------------------------------------------------
-// Coalesce helper
-// ---------------------------------------------------------------------------
-
-function coalesce(ops: DiffOp[]): DiffScript {
-  if (ops.length === 0) return [];
-  const out: DiffOp[] = [];
-  for (const op of ops) {
-    const last = out[out.length - 1];
-    if (last === undefined) {
-      out.push(cloneOp(op));
-      continue;
-    }
-    if (op.type === "retain" && last.type === "retain") {
-      (last as { type: "retain"; count: number }).count += op.count;
-    } else if (op.type === "delete" && last.type === "delete") {
-      (last as { type: "delete"; count: number }).count += op.count;
-    } else if (op.type === "insert" && last.type === "insert") {
-      (last as { type: "insert"; tokens: string[] }).tokens = [
-        ...(last as { type: "insert"; tokens: readonly string[] }).tokens,
-        ...op.tokens,
-      ];
-    } else {
-      out.push(cloneOp(op));
-    }
-  }
-  return out;
-}
-
-function cloneOp(op: DiffOp): DiffOp {
-  if (op.type === "insert") {
-    return { type: "insert", tokens: [...op.tokens] };
-  }
-  return { ...op };
-}
 
 // ---------------------------------------------------------------------------
 // Reference DP diff (O(n*m) space, §5 algorithm with delete-on-tie)

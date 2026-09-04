@@ -95,7 +95,7 @@ export async function run(cwd: string): Promise<number> {
  * Compute the canonical integration order for a set of patches.
  * Uses the same topological + Snap-order sort as replay.
  */
-function computeIntegrationOrder(patches: Patch[]): Patch[] {
+function computeIntegrationOrder(patches: readonly Patch[]): Patch[] {
   const appliedDots = new Set<string>();
   const result: Patch[] = [];
   const remaining = new Set<Patch>(patches);

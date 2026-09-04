@@ -5,7 +5,7 @@ import type { DiffScript } from "../core/diff.js";
 export type ChangeType = "put" | "delete" | "text";
 
 export type Change =
-  | { readonly type: "put"; readonly path: string; readonly edit: DiffScript }
+  | { readonly type: "put"; readonly path: string; readonly content: string } // base64-encoded
   | { readonly type: "delete"; readonly path: string }
   | { readonly type: "text"; readonly path: string; readonly edit: DiffScript };
 

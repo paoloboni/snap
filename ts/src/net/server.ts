@@ -2,51 +2,52 @@
 // SPEC §7.9, §9
 
 import * as http from "node:http";
-import * as nodePath from "node:path";
-import * as fs from "node:fs/promises";
+import { readRepository } from "../repo/store.js";
+import { serializeRepository } from "../repo/json.js";
 
 /**
  * Start snapshot server on the given port.
+ * - Reads and validates the repository at startup (throws SnapError on invalid repo)
  * - Binds to 127.0.0.1 only
- * - Serves GET/HEAD /repository.json with the startup snapshot
+ * - Serves GET/HEAD /repository.json with the startup snapshot (canonical JSON)
  * - Other paths → 404; other methods → 405 with Allow: GET, HEAD
+ * - PLAN.md §7.5 rule 8: raw exact request-target match (?query → 404)
  * - Prints exactly one line to stdout: http://127.0.0.1:<port>/repository.json
  * - Exits 0 on SIGTERM or SIGINT
  */
 export async function serve(repoDir: string, port: number): Promise<never> {
-  // Read the snapshot at startup
-  const repoJsonPath = nodePath.join(repoDir, ".snap", "repository.json");
-  const snapshot = await fs.readFile(repoJsonPath, "utf8");
+  // Validate and snapshot the repository at startup
+  const repo = await readRepository(repoDir);
+  const body = serializeRepository(repo);
+  const bodyBuffer = Buffer.from(body, "utf8");
 
   const server = http.createServer((req, res) => {
     const method = req.method ?? "GET";
+    // req.url is the raw request-target including any query string
     const target = req.url ?? "/";
 
+    // PLAN.md §7.5 rule 8: exact request-target match (query string → 404)
     if (target !== "/repository.json") {
-      res.writeHead(404, { "Content-Type": "text/plain" });
-      res.end("Not Found");
+      res.writeHead(404);
+      res.end();
       return;
     }
 
     if (method !== "GET" && method !== "HEAD") {
-      res.writeHead(405, {
-        Allow: "GET, HEAD",
-        "Content-Type": "text/plain",
-      });
-      res.end("Method Not Allowed");
+      res.writeHead(405, { Allow: "GET, HEAD" });
+      res.end();
       return;
     }
 
-    const body = Buffer.from(snapshot, "utf8");
     res.writeHead(200, {
       "Content-Type": "application/json; charset=utf-8",
-      "Content-Length": body.length,
+      "Content-Length": bodyBuffer.length,
     });
 
     if (method === "HEAD") {
       res.end();
     } else {
-      res.end(body);
+      res.end(bodyBuffer);
     }
   });
 
@@ -63,7 +64,7 @@ export async function serve(repoDir: string, port: number): Promise<never> {
   }
 
   const actualPort = address.port;
-  // Always print plain (SPEC §7.9: "startup URL always remains plain")
+  // Always print plain (SPEC §7.9, §7.11: "startup URL always remains plain")
   process.stdout.write(`http://127.0.0.1:${actualPort}/repository.json\n`);
 
   // Wait for SIGTERM or SIGINT, then exit 0

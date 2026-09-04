@@ -7,10 +7,15 @@
     "noUncheckedIndexedAccess": true,
     "noImplicitOverride": true,
     "noFallthroughCasesInSwitch": true,
+    "exactOptionalPropertyTypes": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "verbatimModuleSyntax": true,
+    "noImplicitReturns": true,
+    "useUnknownInCatchVariables": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "isolatedModules": true,
     "noEmit": true
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*", "test/**/*", "bench/**/*"]
 }

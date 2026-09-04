@@ -137,6 +137,53 @@ class MinHeap {
 }
 
 // ---------------------------------------------------------------------------
+// Core heap-based replay kernel (shared by replay() and materializeBaseTree())
+// ---------------------------------------------------------------------------
+
+/**
+ * Run the heap-based OT replay over a causally-closed set of patches.
+ * Returns the final tree. Does NOT validate frontier/unreachability — the
+ * caller is responsible for ensuring the patches form a valid causal closure.
+ */
+function replayPatches(patches: readonly Patch[]): Tree {
+  const appliedDots = new Set<string>();
+  const appliedPatches: Patch[] = [];
+  let currentTree = emptyTree();
+
+  const heap = new MinHeap();
+  const remaining = new Set<Patch>(patches);
+
+  for (const patch of patches) {
+    if (allBasesApplied(patch, appliedDots)) {
+      heap.push({ patch, resultVector: patchResultVector(patch) });
+      remaining.delete(patch);
+    }
+  }
+
+  while (heap.size > 0) {
+    const entry = heap.pop()!;
+    const patch = entry.patch;
+
+    appliedDots.add(`${patch.author}@${patch.revision}`);
+
+    const B = materializeBaseTree(appliedPatches, patch.base);
+    const result = applyPatchToTree(patch, currentTree, B);
+    currentTree = result.tree;
+
+    appliedPatches.push(patch);
+
+    for (const p of remaining) {
+      if (allBasesApplied(p, appliedDots)) {
+        heap.push({ patch: p, resultVector: patchResultVector(p) });
+        remaining.delete(p);
+      }
+    }
+  }
+
+  return currentTree;
+}
+
+// ---------------------------------------------------------------------------
 // Materialize the exact base tree for a patch
 // ---------------------------------------------------------------------------
 
@@ -145,7 +192,9 @@ class MinHeap {
  * corresponding tree states, materialize the tree at exactly base vector B.
  *
  * A patch (author, revision) is in B iff revision <= B[author].
- * We replay from empty tree, applying only patches selected by B.
+ * We replay using the same heap-based OT integration as replay(), restricted
+ * to the patches whose result vectors are ≤ baseVec. This correctly handles
+ * concurrent patches within the base (RA-001 fix).
  */
 function materializeBaseTree(appliedPatches: Patch[], base: VersionVector): Tree {
   // Select patches where result vector <= base
@@ -158,12 +207,17 @@ function materializeBaseTree(appliedPatches: Patch[], base: VersionVector): Tree
     }
   }
 
-  // Apply selected patches in integration order (they're already in order)
-  let tree = emptyTree();
-  for (const p of selected) {
-    tree = applyPatchToTree(p, tree, tree).tree;
+  if (selected.length === 0) {
+    return emptyTree();
   }
-  return tree;
+
+  // Build a mini-repository with the selected patches and base as the frontier.
+  // base is a valid frontier for these patches because:
+  //   - every selected patch has resultVector ≤ base, so patch.revision ≤ base[author]
+  //   - all causal predecessors of selected patches are also selected (by transitivity)
+  // Use replayPatches() — the shared heap-based OT kernel — directly to avoid the
+  // frontier-validation overhead inside replay().
+  return replayPatches(selected);
 }
 
 // ---------------------------------------------------------------------------

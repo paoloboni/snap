@@ -1024,8 +1024,276 @@ void describe("joinRepositories — warning semantics", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Tree operations tests
+// RA-001 regression: materializeBaseTree with concurrent patches in base
 // ---------------------------------------------------------------------------
+
+void describe("replay — RA-001: concurrent patches in base use proper OT", () => {
+  /**
+   * Bug: materializeBaseTree called applyPatchToTree(p, tree, tree), passing the
+   * same accumulating tree as both C and B. Rule 1 (B==C → apply directly) then
+   * fired unconditionally, bypassing OT. When the base contained concurrent patches
+   * that both edited the same file, the naive sequential apply produced a tree with
+   * the wrong number of tokens, causing subsequent edits (like Charlie's) to crash
+   * or produce wrong output.
+   *
+   * Fix: materializeBaseTree now calls replayPatches() — the same heap-based OT
+   * kernel used by replay() — restricted to the patches whose resultVec ≤ baseVec.
+   */
+
+  void test("RA-001: charlie's base tree after concurrent inserts at same position is OT-merged", () => {
+    /**
+     * seed: file.txt = "A\nB\nC\n"  (3 tokens)
+     *
+     * alice (base=seed): inserts "X\n" after "A\n"
+     *   edit: [retain 1, insert ["X\n"], retain 2]
+     *   authored result: "A\nX\nB\nC\n"
+     *
+     * bob (base=seed): inserts "Y\n" after "A\n"
+     *   edit: [retain 1, insert ["Y\n"], retain 2]
+     *   authored result: "A\nY\nB\nC\n"
+     *
+     * Integration order for alice+bob:
+     *   snapOrder: alice result = {alice@x:1,seed@x:1}, bob result = {bob@x:1,seed@x:1}
+     *   Sorted IDs: [alice@x, bob@x, seed@x]. At alice@x: alice=1, bob=0 → alice is LARGER.
+     *   So bob integrates first → seed → bob → alice.
+     *
+     * After seed+bob: "A\nY\nB\nC\n"
+     * Apply alice (B=seed="A\nB\nC\n", C="A\nY\nB\nC\n"):
+     *   Q = diff(["A\n","B\n","C\n"], ["A\n","Y\n","B\n","C\n"])
+     *     = [retain 1, insert ["Y\n"], retain 2]
+     *   P = [retain 1, insert ["X\n"], retain 2]
+     *   transform(P, Q): Q-insert at same position → Q's Y is placed before P's X
+     *     → P' = [retain 2, insert ["X\n"], retain 2]
+     *   Apply to ["A\n","Y\n","B\n","C\n"]: "A\nY\nX\nB\nC\n"
+     *
+     * charlie (base = {alice@x:1, bob@x:1, seed@x:1}):
+     *   charlie's correct base tree = "A\nY\nX\nB\nC\n" (OT-merged alice+bob result)
+     *
+     * BUG (before fix): materializeBaseTree applied alice's 3-token edit naively to the
+     *   4-token accumulated tree "A\nY\nB\nC\n", failing with "does not consume old content"
+     *   OR producing a wrong base tree.
+     *
+     * CORRECT (after fix): charlie's base tree = "A\nY\nX\nB\nC\n"
+     *   Charlie appends "Z\n" → result = "A\nY\nX\nB\nC\nZ\n"
+     */
+
+    const seed = makePatch("seed@x", 1, [], "seed", [
+      {
+        type: "text",
+        path: "file.txt",
+        edit: [{ type: "insert", tokens: ["A\n", "B\n", "C\n"] }],
+      },
+    ]);
+
+    // alice inserts "X\n" after "A\n" (at position 1 in the seed tree)
+    const alice = makePatch("alice@x", 1, [["seed@x", 1]], "alice inserts X", [
+      {
+        type: "text",
+        path: "file.txt",
+        edit: [
+          { type: "retain", count: 1 },
+          { type: "insert", tokens: ["X\n"] },
+          { type: "retain", count: 2 },
+        ],
+      },
+    ]);
+
+    // bob inserts "Y\n" after "A\n" (same position, concurrent with alice)
+    const bob = makePatch("bob@x", 1, [["seed@x", 1]], "bob inserts Y", [
+      {
+        type: "text",
+        path: "file.txt",
+        edit: [
+          { type: "retain", count: 1 },
+          { type: "insert", tokens: ["Y\n"] },
+          { type: "retain", count: 2 },
+        ],
+      },
+    ]);
+
+    // charlie has both alice and bob in base — triggers materializeBaseTree with concurrent patches
+    const charlie = makePatch(
+      "charlie@x",
+      1,
+      [
+        ["alice@x", 1],
+        ["bob@x", 1],
+        ["seed@x", 1],
+      ],
+      "charlie appends Z",
+      [
+        {
+          type: "text",
+          path: "file.txt",
+          // charlie appends "Z\n" after all 5 tokens in the merged base "A\nY\nX\nB\nC\n"
+          edit: [
+            { type: "retain", count: 5 },
+            { type: "insert", tokens: ["Z\n"] },
+          ],
+        },
+      ],
+    );
+
+    const repo = makeRepo(
+      [
+        ["alice@x", 1],
+        ["bob@x", 1],
+        ["charlie@x", 1],
+        ["seed@x", 1],
+      ],
+      [alice, bob, charlie, seed],
+    );
+
+    // With the fix: should NOT throw, and result should be "A\nY\nX\nB\nC\nZ\n"
+    const { tree, warnings } = replay(repo);
+    assert.deepEqual(warnings, [], "no warnings expected for clean OT scenario");
+    const got = tree.get("file.txt");
+    assert.ok(got !== undefined, "file.txt must exist");
+    assert.equal(
+      got.toString("utf8"),
+      "A\nY\nX\nB\nC\nZ\n",
+      "RA-001: charlie's base must be OT-merged (A\\nY\\nX\\nB\\nC\\n), not naively accumulated",
+    );
+  });
+
+  void test("RA-001: task scenario — seed, alice (B→X), bob (C→Y), charlie base=(alice+bob)", () => {
+    /**
+     * Exact scenario from the task description:
+     *   seed: "A\nB\nC\n"
+     *   alice (concurrent with bob, forked from seed): changes it to "A\nX\nC\n"
+     *     (replaces "B\n" with "X\n")
+     *   bob (concurrent with alice, forked from seed): changes it to "A\nB\nY\n"
+     *     (replaces "C\n" with "Y\n")
+     *   charlie: base=(alice AND bob). charlie's base tree must be "A\nX\nY\n".
+     *
+     * Integration order: seed → bob → alice (alice@x < bob@x → alice later)
+     * After bob (B=seed, C=seed, B==C): "A\nB\nY\n"
+     * Apply alice (B=seed, C="A\nB\nY\n"):
+     *   alice's edit: replace "B\n" → "X\n" = [retain 1, delete 1, insert ["X\n"], retain 1]
+     *   Q = diff(["A\n","B\n","C\n"], ["A\n","B\n","Y\n"]) = [retain 2, delete 1, insert ["Y\n"]]
+     *   P = [retain 1, delete 1, insert ["X\n"], retain 1]
+     *   transform(P, Q):
+     *     retain 1 vs retain 2: emit retain 1, consume 1 from each
+     *     P: delete 1, Q: retain 1 → emit nothing (delete wins), consume 1 from each
+     *     P: insert ["X\n"] → emit insert ["X\n"]
+     *     P: retain 1, Q: delete 1, insert ["Y\n"] remaining:
+     *       Q delete 1 vs P retain 1 → P's retain survives?
+     *       Actually per OT rules: P retain vs Q delete → nothing, consume 1 from each
+     *       Then Q insert ["Y\n"] → retain 1 (for Q insert, P has nothing)
+     *       Wait, P is done. Drain Q: insert ["Y\n"] → retain 1
+     *     P' = [retain 1, insert ["X\n"], retain 1, insert ["Y\n"]]...
+     *     Hmm actually let me reconsider. This test verifies the OT result directly.
+     *
+     * The key assertion: charlie's base tree = OT merge of alice+bob applied to seed.
+     * We observe it by having charlie make a no-op append after verifying the final tree.
+     *
+     * Simpler: just verify the three-patch (seed+alice+bob) replay result is "A\nX\nY\n",
+     * then verify charlie can be applied on top of it with a correct base.
+     */
+
+    const seed = makePatch("seed@x", 1, [], "seed", [
+      {
+        type: "text",
+        path: "file.txt",
+        edit: [{ type: "insert", tokens: ["A\n", "B\n", "C\n"] }],
+      },
+    ]);
+
+    // alice: "A\nB\nC\n" → "A\nX\nC\n" (replace B with X)
+    const alice = makePatch("alice@x", 1, [["seed@x", 1]], "alice B→X", [
+      {
+        type: "text",
+        path: "file.txt",
+        edit: [
+          { type: "retain", count: 1 },
+          { type: "delete", count: 1 },
+          { type: "insert", tokens: ["X\n"] },
+          { type: "retain", count: 1 },
+        ],
+      },
+    ]);
+
+    // bob: "A\nB\nC\n" → "A\nB\nY\n" (replace C with Y)
+    const bob = makePatch("bob@x", 1, [["seed@x", 1]], "bob C→Y", [
+      {
+        type: "text",
+        path: "file.txt",
+        edit: [
+          { type: "retain", count: 2 },
+          { type: "delete", count: 1 },
+          { type: "insert", tokens: ["Y\n"] },
+        ],
+      },
+    ]);
+
+    // First verify that seed+alice+bob produces "A\nX\nY\n" (standard OT)
+    {
+      const repo3 = makeRepo(
+        [
+          ["alice@x", 1],
+          ["bob@x", 1],
+          ["seed@x", 1],
+        ],
+        [alice, bob, seed],
+      );
+      const { tree: tree3, warnings: w3 } = replay(repo3);
+      assert.deepEqual(w3, [], "no warnings for seed+alice+bob");
+      assert.equal(
+        tree3.get("file.txt")?.toString("utf8"),
+        "A\nX\nY\n",
+        "seed+alice+bob should OT-merge to A\\nX\\nY\\n",
+      );
+    }
+
+    // Now charlie has base=(alice+bob+seed) — charlie's base tree must be "A\nX\nY\n"
+    // charlie appends "Z\n" using a 3-token retain (valid for base "A\nX\nY\n")
+    const charlie = makePatch(
+      "charlie@x",
+      1,
+      [
+        ["alice@x", 1],
+        ["bob@x", 1],
+        ["seed@x", 1],
+      ],
+      "charlie appends Z",
+      [
+        {
+          type: "text",
+          path: "file.txt",
+          edit: [
+            { type: "retain", count: 3 },
+            { type: "insert", tokens: ["Z\n"] },
+          ],
+        },
+      ],
+    );
+
+    const repo = makeRepo(
+      [
+        ["alice@x", 1],
+        ["bob@x", 1],
+        ["charlie@x", 1],
+        ["seed@x", 1],
+      ],
+      [alice, bob, charlie, seed],
+    );
+
+    // With the fix: charlie's base is correctly "A\nX\nY\n" (3 tokens), so his
+    // retain-3 + insert-Z edit applies cleanly; result = "A\nX\nY\nZ\n"
+    // Without the fix: charlie's base would be "A\nX\nY\n" only if the naive apply
+    // happened to work (it might in this case since alice and bob touch different tokens).
+    // The primary regression test is the concurrent-inserts-at-same-position test above.
+    const { tree, warnings } = replay(repo);
+    assert.deepEqual(warnings, [], "no warnings for charlie scenario");
+    const got = tree.get("file.txt");
+    assert.ok(got !== undefined, "file.txt must exist");
+    assert.equal(
+      got.toString("utf8"),
+      "A\nX\nY\nZ\n",
+      "RA-001 task scenario: charlie must see OT-merged base A\\nX\\nY\\n",
+    );
+  });
+});
 
 void describe("Tree — immutable operations", () => {
   void test("emptyTree has no paths", () => {

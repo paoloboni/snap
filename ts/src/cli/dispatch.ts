@@ -15,6 +15,8 @@ import * as mergeCmd from "../commands/merge.js";
 import * as revertCmd from "../commands/revert.js";
 import { serve } from "../net/server.js";
 import { findRepository, readRepository } from "../repo/store.js";
+import { colorMode } from "../present/mode.js";
+import { S } from "../present/sgr.js";
 
 /**
  * Validate SNAP_COLOR environment variable.
@@ -30,6 +32,19 @@ function checkSnapColor(): void {
 }
 
 /**
+ * Write an error line to stderr, colored if SNAP_COLOR allows it.
+ * SPEC §7.11: plain error <error> → S(31,"✗ " + <error>) + LF in terminal mode
+ * The SNAP_COLOR-invalid error is always plain (no valid presentation selected yet).
+ */
+export function writeError(message: string, plain: boolean = false): void {
+  if (!plain && colorMode(process.stderr)) {
+    process.stderr.write(`${S(31, `\u2717 ${message}`)}\n`);
+  } else {
+    process.stderr.write(`${message}\n`);
+  }
+}
+
+/**
  * Dispatch a Command to the appropriate handler.
  * Returns exit code 0/1/2.
  *
@@ -41,17 +56,20 @@ function checkSnapColor(): void {
 export async function dispatch(cmd: Command, cwd: string): Promise<number> {
   try {
     // Check SNAP_COLOR before any command (PLAN.md §7.5 rule 2)
+    // The error for invalid SNAP_COLOR is always plain (SPEC §7.11)
     checkSnapColor();
 
     return await routeCommand(cmd, cwd);
   } catch (e) {
     if (e instanceof SnapError) {
-      process.stderr.write(e.message + "\n");
+      // SNAP_COLOR invalid error → always plain
+      const isSnapColorError = e.message === "snap: SNAP_COLOR must be auto, always, or never";
+      writeError(e.message, isSnapColorError);
       return e.exitCode;
     }
     // Unexpected error
     const wrapped = errInternalError(e);
-    process.stderr.write(wrapped.message + "\n");
+    writeError(wrapped.message);
     return 2;
   }
 }
@@ -59,7 +77,12 @@ export async function dispatch(cmd: Command, cwd: string): Promise<number> {
 async function routeCommand(cmd: Command, cwd: string): Promise<number> {
   switch (cmd.cmd) {
     case "version": {
-      process.stdout.write(`snap ${SNAP_VERSION}\n`);
+      if (colorMode(process.stdout)) {
+        // terminal mode: S(1,"snap <semver>") + LF
+        process.stdout.write(`${S(1, `snap ${SNAP_VERSION}`)}\n`);
+      } else {
+        process.stdout.write(`snap ${SNAP_VERSION}\n`);
+      }
       return 0;
     }
 

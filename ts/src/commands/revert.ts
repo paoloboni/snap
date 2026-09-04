@@ -24,6 +24,8 @@ import type { DiffOp } from "../core/diff.js";
 import type { Tree } from "../core/tree.js";
 import type { Repository } from "../repo/model.js";
 import type { VersionVector } from "../core/version.js";
+import { colorMode } from "../present/mode.js";
+import { S } from "../present/sgr.js";
 
 /**
  * Check if a version is materializable in the repository.
@@ -213,7 +215,12 @@ export async function run(versionStr: string, cwd: string): Promise<number> {
 
   // Print new version
   const newVersionStr = formatVersionString(newFrontier);
-  process.stdout.write(newVersionStr + "\n");
+  if (colorMode(process.stdout)) {
+    // terminal mode: S(32,"✓") + " " + S(1,"Reverted") + " " + S(36,version) + LF
+    process.stdout.write(`${S(32, "✓")} ${S(1, "Reverted")} ${S(36, newVersionStr)}\n`);
+  } else {
+    process.stdout.write(newVersionStr + "\n");
+  }
 
   return 0;
 }

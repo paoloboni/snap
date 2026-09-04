@@ -1,9 +1,11 @@
 // snap log — print patches in reverse canonical integration order
-// SPEC §7.4
+// SPEC §7.4, §7.11
 
 import { findRepository, readRepository } from "../repo/store.js";
 import { errNotARepository } from "../errors.js";
 import { formatVersionString } from "../core/version.js";
+import { colorMode } from "../present/mode.js";
+import { S } from "../present/sgr.js";
 import type { Patch } from "../repo/model.js";
 
 /**
@@ -25,8 +27,9 @@ function patchResultVector(patch: Patch): ReadonlyMap<string, number> {
 
 /**
  * Run the log command.
- * Prints patches in reverse canonical integration order (newest first).
- * Format: <version>\t<author>\t<message_escaped>\n
+ * Plain: <version>\t<author>\t<message_escaped>\n
+ * Terminal: S(36,"●") + " " + S(1,message) + LF + "  " + S(36,version) + " " + S(2,"by") + " " + S(35,author) + LF
+ * Entries separated by one extra LF in terminal mode.
  */
 export async function run(cwd: string): Promise<number> {
   const repoDir = findRepository(cwd);
@@ -62,11 +65,27 @@ export async function run(cwd: string): Promise<number> {
   // Reverse for display (newest first)
   const reversed = [...integrationOrder].reverse();
 
-  for (const patch of reversed) {
+  const useColor = colorMode(process.stdout);
+
+  for (let i = 0; i < reversed.length; i++) {
+    const patch = reversed[i]!;
     const resultVec = patchResultVector(patch);
     const versionStr = formatVersionString(resultVec);
-    const escaped = escapeMessage(patch.message);
-    process.stdout.write(`${versionStr}\t${patch.author}\t${escaped}\n`);
+
+    if (useColor) {
+      // Terminal mode: S(36,"●") + " " + S(1,message) + LF + "  " + S(36,version) + " " + S(2,"by") + " " + S(35,author) + LF
+      // Between entries: one additional LF
+      if (i > 0) {
+        process.stdout.write("\n");
+      }
+      process.stdout.write(
+        `${S(36, "●")} ${S(1, patch.message)}\n  ${S(36, versionStr)} ${S(2, "by")} ${S(35, patch.author)}\n`,
+      );
+    } else {
+      // Plain mode: <version>\t<author>\t<message_escaped>\n
+      const escaped = escapeMessage(patch.message);
+      process.stdout.write(`${versionStr}\t${patch.author}\t${escaped}\n`);
+    }
   }
 
   return 0;

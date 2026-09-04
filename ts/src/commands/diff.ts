@@ -1,5 +1,5 @@
 // snap diff [<old> [<new>] [--repo <repo>]] — unified text diff between versions or working tree
-// SPEC §7.6
+// SPEC §7.6, §7.11
 
 import * as nodePath from "node:path";
 import * as fs from "node:fs/promises";
@@ -19,6 +19,8 @@ import { scanWorktree } from "../fsys/worktree.js";
 import { parseVersionString } from "../core/version.js";
 import { isText, tokenize } from "../core/tokens.js";
 import { diff } from "../core/diff.js";
+import { colorMode } from "../present/mode.js";
+import { S } from "../present/sgr.js";
 import type { Tree } from "../core/tree.js";
 import type { VersionVector } from "../core/version.js";
 import type { Repository } from "../repo/model.js";
@@ -110,6 +112,60 @@ async function loadRemoteRepo(url: string, cwd: string): Promise<Repository> {
 // ---------------------------------------------------------------------------
 // Diff rendering
 // ---------------------------------------------------------------------------
+
+/**
+ * Apply color to a plain diff output line (line excludes LF).
+ * SPEC §7.11: first applicable style wins:
+ *   "--- " or "+++ " → bold (1)
+ *   "@@ "            → cyan (36)
+ *   "-"              → red (31)
+ *   "+"              → green (32)
+ *   "\ "             → dim (2)
+ *   "Binary files "  → yellow (33)
+ *   other            → unchanged
+ */
+function colorDiffLine(line: string): string {
+  if (line.startsWith("--- ") || line.startsWith("+++ ")) {
+    return S(1, line);
+  }
+  if (line.startsWith("@@ ")) {
+    return S(36, line);
+  }
+  if (line.startsWith("-")) {
+    return S(31, line);
+  }
+  if (line.startsWith("+")) {
+    return S(32, line);
+  }
+  if (line.startsWith("\\ ")) {
+    return S(2, line);
+  }
+  if (line.startsWith("Binary files ")) {
+    return S(33, line);
+  }
+  return line;
+}
+
+/**
+ * Transform plain diff output to terminal colored output.
+ * Lines are separated by LF; each line (sans LF) is passed through colorDiffLine.
+ */
+function applyDiffColor(plain: string): string {
+  if (plain.length === 0) return plain;
+  // Split by LF — each line ends with LF
+  const lines = plain.split("\n");
+  // Last element is "" if string ends with LF
+  const result: string[] = [];
+  for (let i = 0; i < lines.length - 1; i++) {
+    result.push(colorDiffLine(lines[i]!) + "\n");
+  }
+  // If there's a trailing non-empty element, include it (shouldn't happen normally)
+  const tail = lines[lines.length - 1]!;
+  if (tail.length > 0) {
+    result.push(colorDiffLine(tail));
+  }
+  return result.join("");
+}
 
 /**
  * Render a single diff line. If token doesn't end with LF, adds
@@ -245,6 +301,15 @@ export async function run(
   return runTwoVersionDiff(oldVersion, oldSpec, newSpec, repoUrl, cwd);
 }
 
+function writeDiff(plain: string): void {
+  if (plain.length === 0) return;
+  if (colorMode(process.stdout)) {
+    process.stdout.write(applyDiffColor(plain));
+  } else {
+    process.stdout.write(plain);
+  }
+}
+
 async function runWorkingTreeDiff(cwd: string): Promise<number> {
   const repoDir = findRepository(cwd);
   if (repoDir === null) throw errNotARepository();
@@ -269,7 +334,7 @@ async function runWorkingTreeDiff(cwd: string): Promise<number> {
     (p) => worktreeMap.get(p),
   );
 
-  if (out.length > 0) process.stdout.write(out);
+  writeDiff(out);
   return 0;
 }
 
@@ -303,7 +368,7 @@ async function runVersionVsWorktreeDiff(
     (p) => worktreeMap.get(p),
   );
 
-  if (out.length > 0) process.stdout.write(out);
+  writeDiff(out);
   return 0;
 }
 
@@ -351,6 +416,6 @@ async function runTwoVersionDiff(
     (p) => newTree.get(p),
   );
 
-  if (out.length > 0) process.stdout.write(out);
+  writeDiff(out);
   return 0;
 }

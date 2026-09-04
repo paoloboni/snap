@@ -18,6 +18,8 @@ import { diff } from "../core/diff.js";
 import { comparePaths } from "../core/path.js";
 import type { Change, Patch } from "../repo/model.js";
 import type { DiffOp } from "../core/diff.js";
+import { colorMode } from "../present/mode.js";
+import { S } from "../present/sgr.js";
 
 const MAX_MESSAGE_BYTES = 4096;
 
@@ -184,7 +186,12 @@ export async function run(message: string, cwd: string): Promise<number> {
 
   // Print new version
   const versionStr = formatVersionString(newFrontier);
-  process.stdout.write(versionStr + "\n");
+  if (colorMode(process.stdout)) {
+    // terminal mode: S(32,"✓") + " " + S(1,"Committed") + " " + S(36,version) + LF
+    process.stdout.write(`${S(32, "✓")} ${S(1, "Committed")} ${S(36, versionStr)}\n`);
+  } else {
+    process.stdout.write(versionStr + "\n");
+  }
 
   return 0;
 }

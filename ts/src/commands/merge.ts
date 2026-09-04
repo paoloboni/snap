@@ -12,6 +12,8 @@ import { replay, joinRepositories } from "../repo/replay.js";
 import { scanWorktree } from "../fsys/worktree.js";
 import { materialize } from "../fsys/materialize.js";
 import { formatVersionString } from "../core/version.js";
+import { colorMode } from "../present/mode.js";
+import { S } from "../present/sgr.js";
 import type { Tree } from "../core/tree.js";
 import type { Repository } from "../repo/model.js";
 
@@ -82,12 +84,24 @@ export async function run(url: string, cwd: string): Promise<number> {
 
   // Step 11: Print warnings to stderr (sorted by path, then reason — from replay)
   for (const warning of newWarnings) {
-    process.stderr.write(`warning: auto-resolved ${warning.path}: ${warning.reason}\n`);
+    if (colorMode(process.stderr)) {
+      // terminal mode: S(33,"⚠") + " " + S(33,"auto-resolved path: reason") + LF
+      process.stderr.write(
+        `${S(33, "⚠")} ${S(33, `auto-resolved ${warning.path}: ${warning.reason}`)}\n`,
+      );
+    } else {
+      process.stderr.write(`warning: auto-resolved ${warning.path}: ${warning.reason}\n`);
+    }
   }
 
   // Step 12: Print new version to stdout
   const versionStr = formatVersionString(mergedRepo.frontier);
-  process.stdout.write(versionStr + "\n");
+  if (colorMode(process.stdout)) {
+    // terminal mode: S(32,"✓") + " " + S(1,"Merged") + " " + S(36,version) + LF
+    process.stdout.write(`${S(32, "✓")} ${S(1, "Merged")} ${S(36, versionStr)}\n`);
+  } else {
+    process.stdout.write(versionStr + "\n");
+  }
 
   return 0;
 }

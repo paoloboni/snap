@@ -5,6 +5,9 @@ import * as fs from "node:fs/promises";
 import * as nodePath from "node:path";
 import { findRepository } from "../repo/store.js";
 import { errRepositoryAlreadyExists, errCannotInitializeInsideRepository } from "../errors.js";
+import { colorMode } from "../present/mode.js";
+import { S } from "../present/sgr.js";
+import { formatVersionString } from "../core/version.js";
 
 const EMPTY_REPO_JSON = JSON.stringify({ format: 1, frontier: [], patches: [] }, null, 2) + "\n";
 
@@ -13,7 +16,7 @@ const EMPTY_REPO_JSON = JSON.stringify({ format: 1, frontier: [], patches: [] },
  * - Creates the target directory if it doesn't exist (including parents recursively).
  * - Fails if the target is already inside an existing repository.
  * - Fails if .snap/repository.json already exists at the target.
- * - Prints "()\n" on success.
+ * - Prints "()\n" in plain mode, colored output in terminal mode.
  */
 export async function run(initPath: string, cwd: string): Promise<number> {
   // Resolve target path against cwd
@@ -61,6 +64,17 @@ export async function run(initPath: string, cwd: string): Promise<number> {
   await fs.mkdir(snapDir, { recursive: true });
   await fs.writeFile(repoJsonPath, EMPTY_REPO_JSON, "utf8");
 
-  process.stdout.write("()\n");
+  const emptyVersion = formatVersionString(new Map());
+
+  if (colorMode(process.stdout)) {
+    // terminal mode: S(32,"✓") + " " + S(1,"Initialized repository") + " " + S(36,version) + LF
+    process.stdout.write(
+      `${S(32, "✓")} ${S(1, "Initialized repository")} ${S(36, emptyVersion)}\n`,
+    );
+  } else {
+    // plain mode: just the version string
+    process.stdout.write(`${emptyVersion}\n`);
+  }
+
   return 0;
 }

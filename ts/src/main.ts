@@ -1,5 +1,5 @@
 import { parseArgs } from "./cli/grammar.js";
-import { dispatch } from "./cli/dispatch.js";
+import { dispatch, writeError } from "./cli/dispatch.js";
 import { SnapError, errInternalError } from "./errors.js";
 
 async function main(): Promise<void> {
@@ -9,11 +9,11 @@ async function main(): Promise<void> {
     exitCode = await dispatch(cmd, process.cwd());
   } catch (e) {
     if (e instanceof SnapError) {
-      process.stderr.write(e.message + "\n");
+      writeError(e.message);
       exitCode = e.exitCode;
     } else {
       const wrapped = errInternalError(e);
-      process.stderr.write(wrapped.message + "\n");
+      writeError(wrapped.message);
       exitCode = 2;
     }
   }

@@ -157,15 +157,12 @@ jobs:
                   'perf', 'build', 'chore', 'ci', 'style'
                 ]
               ],
-              'scope-enum': [
-                2,
-                'always',
-                [
-                  'core', 'repo', 'fsys', 'cli', 'present', 'net',
-                  'commands', 'errors', 'tests', 'harness', 'docs',
-                  'bench', 'deps'
-                ]
-              ],
+              // scope-enum is intentionally disabled: primary module scopes
+              // (core, repo, fsys, cli, present, net, commands, errors, tests,
+              // harness, docs, bench, deps) are documented in PLAN.md §13, but
+              // sub-scopes like docs(plan), docs(arch), build(config), test(fuzz)
+              // are legitimate and cannot be exhaustively enumerated in advance.
+              'scope-enum': [0],
               'scope-empty': [0, 'never']
             }
           };

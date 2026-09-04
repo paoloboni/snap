@@ -1,0 +1,165 @@
+format: 1
+name: deep validation catches nested unknown fields non-integer formats unsorted patches and forbidden control characters
+steps:
+  - run:
+      args: [init, local]
+      expect: [{type: exit_code, value: 0}]
+  - write_file: {path: local/keep, text: "unchanged\n"}
+
+  # --- Unknown field at patch level (not repository level) ---
+  - write_file:
+      path: local/.snap/repository.json
+      text: |
+        {
+          "format": 1,
+          "frontier": [["a@x", 1]],
+          "patches": [
+            {
+              "author": "a@x",
+              "revision": 1,
+              "base": [],
+              "message": "patch level unknown",
+              "changes": [{"type": "put", "path": "f", "content": "YQ=="}],
+              "extra": true
+            }
+          ]
+        }
+  - run:
+      cwd: local
+      args: [status]
+      expect:
+        - {type: exit_code, value: 1}
+        - {type: stdout_equals, value: ""}
+        - {type: stderr_matches, pattern: '^snap: .+unknown field: extra\n$'}
+
+  # --- format: "1" (string instead of integer) ---
+  - write_file:
+      path: local/.snap/repository.json
+      text: |
+        {
+          "format": "1",
+          "frontier": [],
+          "patches": []
+        }
+  - run:
+      cwd: local
+      args: [status]
+      expect:
+        - {type: exit_code, value: 1}
+        - {type: stdout_equals, value: ""}
+        - {type: stderr_matches, pattern: '^snap: .+\n$'}
+
+  # --- format: 1.5 (non-integer number) ---
+  - write_file:
+      path: local/.snap/repository.json
+      text: |
+        {
+          "format": 1.5,
+          "frontier": [],
+          "patches": []
+        }
+  - run:
+      cwd: local
+      args: [status]
+      expect:
+        - {type: exit_code, value: 1}
+        - {type: stdout_equals, value: ""}
+        - {type: stderr_matches, pattern: '^snap: .+\n$'}
+
+  # --- format: 2 (unsupported format version) ---
+  - write_file:
+      path: local/.snap/repository.json
+      text: |
+        {
+          "format": 2,
+          "frontier": [],
+          "patches": []
+        }
+  - run:
+      cwd: local
+      args: [status]
+      expect:
+        - {type: exit_code, value: 1}
+        - {type: stdout_equals, value: ""}
+        - {type: stderr_matches, pattern: '^snap: .+\n$'}
+
+  # --- Patches unsorted by revision within one author ---
+  # b@x revision 2 appears before revision 1 — violates sort order.
+  - write_file:
+      path: local/.snap/repository.json
+      text: |
+        {
+          "format": 1,
+          "frontier": [["b@x", 2]],
+          "patches": [
+            {
+              "author": "b@x",
+              "revision": 2,
+              "base": [["b@x", 1]],
+              "message": "second",
+              "changes": [{"type": "put", "path": "g", "content": "YQ=="}]
+            },
+            {
+              "author": "b@x",
+              "revision": 1,
+              "base": [],
+              "message": "first",
+              "changes": [{"type": "put", "path": "f", "content": "YQ=="}]
+            }
+          ]
+        }
+  - run:
+      cwd: local
+      args: [status]
+      expect:
+        - {type: exit_code, value: 1}
+        - {type: stdout_equals, value: ""}
+        - {type: stderr_matches, pattern: '^snap: .+\n$'}
+
+  # --- Forbidden control character 0x01 in message ---
+  - write_file:
+      path: local/.snap/repository.json
+      base64: ewogICJmb3JtYXQiOiAxLAogICJmcm9udGllciI6IFtbImFAeCIsIDFdXSwKICAicGF0Y2hlcyI6IFsKICAgIHsKICAgICAgImF1dGhvciI6ICJhQHgiLAogICAgICAicmV2aXNpb24iOiAxLAogICAgICAiYmFzZSI6IFtdLAogICAgICAibWVzc2FnZSI6ICJoZWxsbwF3b3JsZCIsCiAgICAgICJjaGFuZ2VzIjogW3sidHlwZSI6ICJwdXQiLCAicGF0aCI6ICJmIiwgImNvbnRlbnQiOiAiWVE9PSJ9XQogICAgfQogIF0KfQo=
+  - run:
+      cwd: local
+      args: [status]
+      expect:
+        - {type: exit_code, value: 1}
+        - {type: stdout_equals, value: ""}
+        - {type: stderr_matches, pattern: '^snap: .+\n$'}
+
+  # --- Adjacent retain/retain in edit script ---
+  - write_file:
+      path: local/.snap/repository.json
+      text: |
+        {
+          "format": 1,
+          "frontier": [["a@x", 2]],
+          "patches": [
+            {
+              "author": "a@x",
+              "revision": 1,
+              "base": [],
+              "message": "base",
+              "changes": [{"type": "text", "path": "f", "edit": [{"insert": ["one\n", "two\n"]}]}]
+            },
+            {
+              "author": "a@x",
+              "revision": 2,
+              "base": [["a@x", 1]],
+              "message": "adjacent retains",
+              "changes": [{"type": "text", "path": "f", "edit": [{"retain": 1}, {"retain": 1}]}]
+            }
+          ]
+        }
+  - run:
+      cwd: local
+      args: [status]
+      expect:
+        - {type: exit_code, value: 1}
+        - {type: stdout_equals, value: ""}
+        - {type: stderr_matches, pattern: '^snap: .+\n$'}
+
+  # Working file remains untouched throughout all validation rejections
+  - assert:
+      - {type: file_text_equals, path: local/keep, value: "unchanged\n"}

@@ -1,0 +1,80 @@
+format: 1
+name: config fallthrough global-only empty-local and missing HOME
+steps:
+  # --- Global config valid while local absent (fallthrough to global) ---
+  - run:
+      args: [init, repo]
+      expect: [{type: exit_code, value: 0}]
+  # Set global config only (no local config).
+  - run:
+      args: [config, --global, contributor.id, global@example.com]
+      expect:
+        - {type: exit_code, value: 0}
+        - {type: stdout_equals, value: ""}
+        - {type: stderr_equals, value: ""}
+  # Verify no local config exists.
+  - assert:
+      - {type: path_not_exists, path: repo/.snap/config.json}
+  # Commit using the global identity (local config absent → global used).
+  - write_file: {path: repo/file.txt, text: "hello\n"}
+  - run:
+      cwd: repo
+      args: [commit, global-only]
+      expect:
+        - {type: exit_code, value: 0}
+        - {type: stdout_equals, value: "(global@example.com->1)\n"}
+        - {type: stderr_equals, value: ""}
+
+  # --- Local config present but empty object {} (no contributor key) →
+  #     falls through to global ---
+  - run:
+      args: [init, repo2]
+      expect: [{type: exit_code, value: 0}]
+  # Write an empty object as local config.
+  - write_file:
+      path: repo2/.snap/config.json
+      text: "{}"
+  - write_file: {path: repo2/file.txt, text: "hello\n"}
+  - run:
+      cwd: repo2
+      args: [commit, empty-local-uses-global]
+      expect:
+        - {type: exit_code, value: 0}
+        - {type: stdout_equals, value: "(global@example.com->1)\n"}
+        - {type: stderr_equals, value: ""}
+
+  # --- HOME pointing at a nonexistent path: global config unavailable ---
+  # With no local config and HOME missing, contributor.id is unavailable.
+  - run:
+      args: [init, repo3]
+      expect: [{type: exit_code, value: 0}]
+  - write_file: {path: repo3/file.txt, text: "hello\n"}
+  - run:
+      cwd: repo3
+      env:
+        HOME: /nonexistent/path/that/does/not/exist
+      args: [commit, no-home]
+      expect:
+        - {type: exit_code, value: 1}
+        - {type: stdout_equals, value: ""}
+        - {type: stderr_equals, value: "snap: contributor.id is required; configure it locally or globally\n"}
+
+  # --- HOME pointing at nonexistent path but local config present ---
+  # Local config should still be read even if HOME is invalid.
+  - run:
+      args: [init, repo4]
+      expect: [{type: exit_code, value: 0}]
+  - run:
+      cwd: repo4
+      args: [config, contributor.id, local@example.com]
+      expect: [{type: exit_code, value: 0}]
+  - write_file: {path: repo4/file.txt, text: "hello\n"}
+  - run:
+      cwd: repo4
+      env:
+        HOME: /nonexistent/path/that/does/not/exist
+      args: [commit, local-with-bad-home]
+      expect:
+        - {type: exit_code, value: 0}
+        - {type: stdout_equals, value: "(local@example.com->1)\n"}
+        - {type: stderr_equals, value: ""}

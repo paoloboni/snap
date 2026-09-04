@@ -1,0 +1,114 @@
+format: 1
+name: failure safety diff repo leaves local repository untouched after network error
+steps:
+  # Set up a local repository with some history.
+  - run:
+      args: [init, local]
+      expect: [{type: exit_code, value: 0}]
+  - run:
+      cwd: local
+      args: [config, contributor.id, local@x]
+      expect: [{type: exit_code, value: 0}]
+  - write_file: {path: local/file.txt, text: "local content\n"}
+  - run:
+      cwd: local
+      args: [commit, initial]
+      expect:
+        - {type: exit_code, value: 0}
+        - {type: stdout_equals, value: "(local@x->1)\n"}
+
+  # Capture the initial repository state.
+  - assert:
+      - type: json_equals
+        path: local/.snap/repository.json
+        value:
+          format: 1
+          frontier: [[local@x, 1]]
+          patches:
+            - author: local@x
+              revision: 1
+              base: []
+              message: initial
+              changes:
+                - type: text
+                  path: file.txt
+                  edit:
+                    - insert: ["local content\n"]
+
+  # --- diff --repo against a malformed local repository leaves local untouched ---
+  - run:
+      args: [init, malformed]
+      expect: [{type: exit_code, value: 0}]
+  - write_file:
+      path: malformed/.snap/repository.json
+      text: |
+        {
+          "format": 1,
+          "frontier": [],
+          "patches": [],
+          "bad": true
+        }
+  - run:
+      cwd: local
+      args: [diff, "()", "()", --repo, ../malformed]
+      expect:
+        - {type: exit_code, value: 1}
+        - {type: stdout_equals, value: ""}
+        - {type: stderr_matches, pattern: '^snap: .+\n$'}
+
+  # Local repository must remain completely untouched.
+  - assert:
+      - type: json_equals
+        path: local/.snap/repository.json
+        value:
+          format: 1
+          frontier: [[local@x, 1]]
+          patches:
+            - author: local@x
+              revision: 1
+              base: []
+              message: initial
+              changes:
+                - type: text
+                  path: file.txt
+                  edit:
+                    - insert: ["local content\n"]
+      - {type: file_text_equals, path: local/file.txt, value: "local content\n"}
+
+  # --- diff --repo against a malformed HTTP server also leaves local untouched ---
+  - start_http:
+      id: bad-http
+      capture_url: bad_url
+      routes:
+        - method: GET
+          target: /repository.json
+          status: 200
+          text: 'not valid json at all'
+  - run:
+      cwd: local
+      args: [diff, "()", "()", --repo, "{{bad_url}}/repository.json"]
+      expect:
+        - {type: exit_code, value: 1}
+        - {type: stdout_equals, value: ""}
+        - {type: stderr_matches, pattern: '^snap: .+\n$'}
+  - assert:
+      - type: json_equals
+        path: local/.snap/repository.json
+        value:
+          format: 1
+          frontier: [[local@x, 1]]
+          patches:
+            - author: local@x
+              revision: 1
+              base: []
+              message: initial
+              changes:
+                - type: text
+                  path: file.txt
+                  edit:
+                    - insert: ["local content\n"]
+      - type: http_requests_equal
+        server: bad-http
+        value:
+          - {method: GET, target: /repository.json}
+  - stop_http: {id: bad-http}

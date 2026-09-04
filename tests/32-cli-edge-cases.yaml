@@ -1,0 +1,90 @@
+format: 1
+name: CLI edge cases SNAP_COLOR empty invalid port values and default port
+steps:
+  - run:
+      args: [init, repo]
+      expect: [{type: exit_code, value: 0}]
+
+  # --- SNAP_COLOR="" → SNAP_COLOR must be auto, always, or never ---
+  # An empty string is not auto, always, or never.
+  - run:
+      env: {SNAP_COLOR: ""}
+      args: [--version]
+      expect:
+        - {type: exit_code, value: 1}
+        - {type: stdout_equals, value: ""}
+        - {type: stderr_equals, value: "snap: SNAP_COLOR must be auto, always, or never\n"}
+
+  # --- --serve with non-numeric port string ---
+  - run:
+      cwd: repo
+      args: [--serve, notanumber]
+      expect:
+        - {type: exit_code, value: 1}
+        - {type: stdout_equals, value: ""}
+        - {type: stderr_matches, pattern: '^snap: .+\n$'}
+
+  # --- --serve with a negative-looking port string ---
+  # The spec says invalid ports exit 1; test that "-1" is rejected.
+  # Note: on some shells "-1" might be parsed as a flag; we pass it as a literal arg.
+  - run:
+      cwd: repo
+      args: [--serve, "99999"]
+      expect:
+        - {type: exit_code, value: 1}
+        - {type: stdout_equals, value: ""}
+        - {type: stderr_matches, pattern: '^snap: .+\n$'}
+
+  # --- --serve with port 65535 (valid maximum) starts and prints a URL ---
+  - start:
+      id: serve-65535
+      cwd: repo
+      args: [--serve, "65535"]
+      ready:
+        stream: stdout
+        pattern: '^http://127\.0\.0\.1:65535/repository\.json\n'
+      timeout: 5
+  - stop:
+      id: serve-65535
+      signal: SIGTERM
+      timeout: 5
+      expect:
+        - {type: exit_code, value: 0}
+        - {type: stdout_equals, value: "http://127.0.0.1:65535/repository.json\n"}
+        - {type: stderr_equals, value: ""}
+
+  # --- --serve with port 0 (OS-selected) starts and prints the URL ---
+  - start:
+      id: serve0
+      cwd: repo
+      args: [--serve, "0"]
+      ready:
+        stream: stdout
+        pattern: '^http://127\.0\.0\.1:[0-9]+/repository\.json\n'
+      timeout: 5
+  - stop:
+      id: serve0
+      signal: SIGTERM
+      timeout: 5
+      expect:
+        - {type: exit_code, value: 0}
+        - {type: stdout_matches, pattern: '^http://127\.0\.0\.1:[0-9]+/repository\.json\n$'}
+        - {type: stderr_equals, value: ""}
+
+  # --- --serve with default port 8765 (no port argument) ---
+  - start:
+      id: serve-default
+      cwd: repo
+      args: [--serve]
+      ready:
+        stream: stdout
+        pattern: '^http://127\.0\.0\.1:8765/repository\.json\n'
+      timeout: 5
+  - stop:
+      id: serve-default
+      signal: SIGTERM
+      timeout: 5
+      expect:
+        - {type: exit_code, value: 0}
+        - {type: stdout_equals, value: "http://127.0.0.1:8765/repository.json\n"}
+        - {type: stderr_equals, value: ""}

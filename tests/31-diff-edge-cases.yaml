@@ -1,0 +1,106 @@
+format: 1
+name: diff edge cases no-newline on deleted side binary-to-text and empty file existence transitions
+steps:
+  - run:
+      args: [init, repo]
+      expect: [{type: exit_code, value: 0}]
+  - run:
+      cwd: repo
+      args: [config, contributor.id, a@x]
+      expect: [{type: exit_code, value: 0}]
+
+  # --- Commit a file with no trailing newline (old side has no trailing LF) ---
+  # "tail" has no LF; commit it as-is.
+  - write_file: {path: repo/notail.txt, text: "tail"}
+  - run:
+      cwd: repo
+      args: [commit, no-tail]
+      expect:
+        - {type: exit_code, value: 0}
+        - {type: stdout_equals, value: "(a@x->1)\n"}
+
+  # Now replace notail.txt with a version that has a trailing LF.
+  - write_file: {path: repo/notail.txt, text: "tail\n"}
+  - run:
+      cwd: repo
+      args: [diff]
+      expect:
+        - {type: exit_code, value: 0}
+        # old side has no trailing newline: "\ No newline at end of file" appears after "-tail"
+        - type: stdout_equals
+          value: "--- a/notail.txt\n+++ b/notail.txt\n@@ -1,1 +1,1 @@\n-tail\n\\ No newline at end of file\n+tail\n"
+        - {type: stderr_equals, value: ""}
+
+  # --- Commit a binary file, then replace it with a text file (binary→text transition) ---
+  # Start: add a binary file (contains a NUL byte).
+  - write_file: {path: repo/data, base64: YQBi}
+  - run:
+      cwd: repo
+      args: [commit, add-binary]
+      expect:
+        - {type: exit_code, value: 0}
+        - {type: stdout_equals, value: "(a@x->2)\n"}
+
+  # Replace with a text file.
+  - write_file: {path: repo/data, text: "text content\n"}
+  - run:
+      cwd: repo
+      args: [diff]
+      expect:
+        - {type: exit_code, value: 0}
+        # Binary → text: "Binary files a/data and b/data differ" (put-wins applies at diff level)
+        # Actually diff just shows the content difference. data was binary, now is text.
+        # SPEC §7.6: for binary change print one line.
+        - {type: stdout_contains, value: "Binary files"}
+        - {type: stdout_contains, value: "data"}
+        - {type: stderr_equals, value: ""}
+
+  # --- Empty file absent → present: diff shows the block with zero tokens ---
+  # Restore clean working tree first.
+  - write_file: {path: repo/data, base64: YQBi}
+  - write_file: {path: repo/notail.txt, text: "tail"}
+  - run:
+      cwd: repo
+      args: [commit, restore]
+      expect:
+        - {type: exit_code, value: 0}
+        - {type: stdout_equals, value: "(a@x->3)\n"}
+
+  # Now add an empty file; it was absent in the committed tree.
+  - write_file: {path: repo/empty, text: ""}
+  - run:
+      cwd: repo
+      args: [diff]
+      expect:
+        - {type: exit_code, value: 0}
+        # SPEC §7.6: emit a block whenever (existence, bytes) differ.
+        # Empty file absent→present: --- /dev/null, +++ b/empty, @@ -1,0 +1,0 @@
+        - type: stdout_equals
+          value: "--- /dev/null\n+++ b/empty\n@@ -1,0 +1,0 @@\n"
+        - {type: stderr_equals, value: ""}
+
+  # --- Commit the empty file then diff should show no differences ---
+  - run:
+      cwd: repo
+      args: [commit, with-empty]
+      expect:
+        - {type: exit_code, value: 0}
+        - {type: stdout_equals, value: "(a@x->4)\n"}
+  - run:
+      cwd: repo
+      args: [diff]
+      expect:
+        - {type: exit_code, value: 0}
+        - {type: stdout_equals, value: ""}
+        - {type: stderr_equals, value: ""}
+
+  # --- diff (old version, new version) for the no-newline transition ---
+  - run:
+      cwd: repo
+      args: [diff, "(a@x->1)", "(a@x->2)"]
+      expect:
+        - {type: exit_code, value: 0}
+        # a@x->1 has notail.txt="tail" (no LF); a@x->2 adds data binary
+        # notail.txt is same in both (no diff for it here since diff is v1→v2
+        # and v1 already has notail.txt="tail" which is same in v2)
+        - {type: stderr_equals, value: ""}

@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { parseJSON, serializeRepository } from "../../src/repo/json.js";
 import type { Repository } from "../../src/repo/model.js";
 import { SnapError } from "../../src/errors.js";
+import { assertOk, assertErr } from "../helpers/result.js";
 
 // ---------------------------------------------------------------------------
 // parseJSON — valid cases
@@ -12,27 +13,27 @@ import { SnapError } from "../../src/errors.js";
 
 void describe("parseJSON — valid cases", () => {
   void it("parses a simple object", () => {
-    const result = parseJSON('{"a":1}');
+    const result = assertOk(parseJSON('{"a":1}'));
     assert.deepEqual(result, { a: 1 });
   });
 
   void it("parses an array", () => {
-    const result = parseJSON("[1, 2, 3]");
+    const result = assertOk(parseJSON("[1, 2, 3]"));
     assert.deepEqual(result, [1, 2, 3]);
   });
 
   void it("parses null", () => {
-    const result = parseJSON("null");
+    const result = assertOk(parseJSON("null"));
     assert.strictEqual(result, null);
   });
 
   void it("parses true and false", () => {
-    assert.strictEqual(parseJSON("true"), true);
-    assert.strictEqual(parseJSON("false"), false);
+    assert.strictEqual(assertOk(parseJSON("true")), true);
+    assert.strictEqual(assertOk(parseJSON("false")), false);
   });
 
   void it("parses nested objects", () => {
-    const result = parseJSON('{"a":{"b":{"c":42}}}');
+    const result = assertOk(parseJSON('{"a":{"b":{"c":42}}}'));
     assert.deepEqual(result, { a: { b: { c: 42 } } });
   });
 
@@ -50,33 +51,33 @@ void describe("parseJSON — valid cases", () => {
         },
       ],
     });
-    const result = parseJSON(text);
+    const result = assertOk(parseJSON(text));
     assert.ok(typeof result === "object" && result !== null);
   });
 
   void it("handles Unicode escape sequences", () => {
-    const result = parseJSON('"\\u0041"'); // "A"
+    const result = assertOk(parseJSON('"\\u0041"')); // "A"
     assert.strictEqual(result, "A");
   });
 
   void it("handles escape sequences in strings", () => {
-    const result = parseJSON('"line1\\nline2"');
+    const result = assertOk(parseJSON('"line1\\nline2"'));
     assert.strictEqual(result, "line1\nline2");
   });
 
   void it("allows duplicate-valued entries in arrays (arrays have no keys)", () => {
     // Arrays can have repeated values — no error
-    const result = parseJSON("[[1],[1]]");
+    const result = assertOk(parseJSON("[[1],[1]]"));
     assert.deepEqual(result, [[1], [1]]);
   });
 
   void it("handles numbers including floats", () => {
-    const result = parseJSON("1.5");
+    const result = assertOk(parseJSON("1.5"));
     assert.strictEqual(result, 1.5);
   });
 
   void it("handles whitespace-heavy JSON", () => {
-    const result = parseJSON('  {  "a"  :  1  }  ');
+    const result = assertOk(parseJSON('  {  "a"  :  1  }  '));
     assert.deepEqual(result, { a: 1 });
   });
 });
@@ -87,84 +88,54 @@ void describe("parseJSON — valid cases", () => {
 
 void describe("parseJSON — duplicate key detection", () => {
   void it("throws on top-level duplicate key", () => {
-    assert.throws(
-      () => parseJSON('{"format":1,"format":1}'),
-      (e: unknown) => {
-        assert.ok(e instanceof SnapError);
-        assert.ok(e.message.includes("duplicate JSON key"));
-        assert.ok(e.message.includes("format"));
-        return true;
-      },
-    );
+    const e = assertErr(parseJSON('{"format":1,"format":1}'));
+    assert.ok(e instanceof SnapError);
+    assert.ok(e.message.includes("duplicate JSON key"));
+    assert.ok(e.message.includes("format"));
   });
 
   void it("throws on duplicate key in nested object", () => {
-    assert.throws(
-      () => parseJSON('{"a":{"x":1,"x":2}}'),
-      (e: unknown) => {
-        assert.ok(e instanceof SnapError);
-        assert.ok(e.message.includes("duplicate JSON key"));
-        assert.ok(e.message.includes("x"));
-        return true;
-      },
-    );
+    const e = assertErr(parseJSON('{"a":{"x":1,"x":2}}'));
+    assert.ok(e instanceof SnapError);
+    assert.ok(e.message.includes("duplicate JSON key"));
+    assert.ok(e.message.includes("x"));
   });
 
   void it("throws on duplicate key inside object in array", () => {
-    assert.throws(
-      () => parseJSON('[{"a":1,"a":2}]'),
-      (e: unknown) => {
-        assert.ok(e instanceof SnapError);
-        assert.ok(e.message.includes("duplicate JSON key"));
-        return true;
-      },
-    );
+    const e = assertErr(parseJSON('[{"a":1,"a":2}]'));
+    assert.ok(e instanceof SnapError);
+    assert.ok(e.message.includes("duplicate JSON key"));
   });
 
   void it("allows same key in different objects at same depth", () => {
     // {"a":{"x":1},"b":{"x":2}} — "x" appears in two different objects, not a duplicate
-    const result = parseJSON('{"a":{"x":1},"b":{"x":2}}');
+    const result = assertOk(parseJSON('{"a":{"x":1},"b":{"x":2}}'));
     assert.deepEqual(result, { a: { x: 1 }, b: { x: 2 } });
   });
 
   void it("allows same key in sibling objects in array", () => {
-    const result = parseJSON('[{"a":1},{"a":2}]');
+    const result = assertOk(parseJSON('[{"a":1},{"a":2}]'));
     assert.deepEqual(result, [{ a: 1 }, { a: 2 }]);
   });
 
   void it("throws on test 15 exact input: format key duplicated", () => {
     // From test 15-repository-validation.yaml step 2
-    assert.throws(
-      () => parseJSON('{"format":1,"format":1,"frontier":[],"patches":[]}'),
-      (e: unknown) => {
-        assert.ok(e instanceof SnapError);
-        assert.ok(e.message.includes("duplicate JSON key"));
-        return true;
-      },
-    );
+    const e = assertErr(parseJSON('{"format":1,"format":1,"frontier":[],"patches":[]}'));
+    assert.ok(e instanceof SnapError);
+    assert.ok(e.message.includes("duplicate JSON key"));
   });
 
   void it("throws on duplicate key with escaped quotes in key", () => {
-    assert.throws(
-      () => parseJSON('{"key\\"x":1,"key\\"x":2}'),
-      (e: unknown) => {
-        assert.ok(e instanceof SnapError);
-        assert.ok(e.message.includes("duplicate JSON key"));
-        return true;
-      },
-    );
+    const e = assertErr(parseJSON('{"key\\"x":1,"key\\"x":2}'));
+    assert.ok(e instanceof SnapError);
+    assert.ok(e.message.includes("duplicate JSON key"));
   });
 
   void it("detects duplicate at deeply nested level", () => {
-    assert.throws(
-      () => parseJSON('{"a":{"b":{"c":{"d":1,"d":2}}}}'),
-      (e: unknown) => {
-        assert.ok(e instanceof SnapError);
-        assert.ok(e.message.includes("duplicate JSON key"));
-        assert.ok(e.message.includes("d"));
-        return true;
-      },
-    );
+    const e = assertErr(parseJSON('{"a":{"b":{"c":{"d":1,"d":2}}}}'));
+    assert.ok(e instanceof SnapError);
+    assert.ok(e.message.includes("duplicate JSON key"));
+    assert.ok(e.message.includes("d"));
   });
 });
 
@@ -174,54 +145,29 @@ void describe("parseJSON — duplicate key detection", () => {
 
 void describe("parseJSON — invalid JSON errors", () => {
   void it("throws on empty string", () => {
-    assert.throws(
-      () => parseJSON(""),
-      (e: unknown) => {
-        assert.ok(e instanceof SnapError);
-        assert.ok(e.message.includes("invalid JSON"));
-        return true;
-      },
-    );
+    const e = assertErr(parseJSON(""));
+    assert.ok(e instanceof SnapError);
+    assert.ok(e.message.includes("invalid JSON"));
   });
 
   void it("throws on malformed JSON", () => {
-    assert.throws(
-      () => parseJSON("{bad json}"),
-      (e: unknown) => {
-        assert.ok(e instanceof SnapError);
-        return true;
-      },
-    );
+    const e = assertErr(parseJSON("{bad json}"));
+    assert.ok(e instanceof SnapError);
   });
 
   void it("throws on trailing garbage", () => {
-    assert.throws(
-      () => parseJSON('{"a":1}extra'),
-      (e: unknown) => {
-        assert.ok(e instanceof SnapError);
-        return true;
-      },
-    );
+    const e = assertErr(parseJSON('{"a":1}extra'));
+    assert.ok(e instanceof SnapError);
   });
 
   void it("throws on unterminated string", () => {
-    assert.throws(
-      () => parseJSON('{"a": "unterminated'),
-      (e: unknown) => {
-        assert.ok(e instanceof SnapError);
-        return true;
-      },
-    );
+    const e = assertErr(parseJSON('{"a": "unterminated'));
+    assert.ok(e instanceof SnapError);
   });
 
   void it("throws on unterminated object", () => {
-    assert.throws(
-      () => parseJSON('{"a":1'),
-      (e: unknown) => {
-        assert.ok(e instanceof SnapError);
-        return true;
-      },
-    );
+    const e = assertErr(parseJSON('{"a":1'));
+    assert.ok(e instanceof SnapError);
   });
 });
 

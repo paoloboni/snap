@@ -1,5 +1,10 @@
 // SnapError class and full message catalogue
 // Every factory function corresponds to a §7.1–§7.4 pinned string.
+//
+// SnapError extends Error purely for message/stack ergonomics; it is never
+// thrown. Every fallible operation returns SnapResult<T> instead.
+
+import type { Result } from "./result.js";
 
 export class SnapError extends Error {
   constructor(
@@ -10,6 +15,9 @@ export class SnapError extends Error {
     this.name = "SnapError";
   }
 }
+
+/** The single Result shape used throughout Snap. */
+export type SnapResult<T> = Result<T, SnapError>;
 
 // ---------------------------------------------------------------------------
 // §7.1 Byte-exact stderr lines

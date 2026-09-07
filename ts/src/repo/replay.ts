@@ -17,6 +17,8 @@ import {
   errPatchCollision,
   errDeleteOfAbsentPath,
 } from "../errors.js";
+import type { SnapResult } from "../errors.js";
+import { ok, err } from "../result.js";
 
 export type Warning = { readonly path: string; readonly reason: string };
 
@@ -145,7 +147,7 @@ class MinHeap {
  * Returns the final tree. Does NOT validate frontier/unreachability — the
  * caller is responsible for ensuring the patches form a valid causal closure.
  */
-function replayPatches(patches: readonly Patch[]): Tree {
+function replayPatches(patches: readonly Patch[]): SnapResult<Tree> {
   const appliedDots = new Set<string>();
   const appliedPatches: Patch[] = [];
   let currentTree = emptyTree();
@@ -166,9 +168,12 @@ function replayPatches(patches: readonly Patch[]): Tree {
 
     appliedDots.add(`${patch.author}@${patch.revision}`);
 
-    const B = materializeBaseTree(appliedPatches, patch.base);
-    const result = applyPatchToTree(patch, currentTree, B);
-    currentTree = result.tree;
+    const baseTree = materializeBaseTree(appliedPatches, patch.base);
+    if (!baseTree.ok) return err(baseTree.error);
+
+    const result = applyPatchToTree(patch, currentTree, baseTree.value);
+    if (!result.ok) return err(result.error);
+    currentTree = result.value.tree;
 
     appliedPatches.push(patch);
 
@@ -180,7 +185,7 @@ function replayPatches(patches: readonly Patch[]): Tree {
     }
   }
 
-  return currentTree;
+  return ok(currentTree);
 }
 
 // ---------------------------------------------------------------------------
@@ -196,7 +201,7 @@ function replayPatches(patches: readonly Patch[]): Tree {
  * to the patches whose result vectors are ≤ baseVec. This correctly handles
  * concurrent patches within the base (RA-001 fix).
  */
-function materializeBaseTree(appliedPatches: Patch[], base: VersionVector): Tree {
+function materializeBaseTree(appliedPatches: Patch[], base: VersionVector): SnapResult<Tree> {
   // Select patches where result vector <= base
   const selected: Patch[] = [];
   for (const p of appliedPatches) {
@@ -208,7 +213,7 @@ function materializeBaseTree(appliedPatches: Patch[], base: VersionVector): Tree
   }
 
   if (selected.length === 0) {
-    return emptyTree();
+    return ok(emptyTree());
   }
 
   // Build a mini-repository with the selected patches and base as the frontier.
@@ -224,24 +229,26 @@ function materializeBaseTree(appliedPatches: Patch[], base: VersionVector): Tree
 // Compute what T (authored result) would be for a change applied to base tree B
 // ---------------------------------------------------------------------------
 
-function computeT(change: Change, B: Tree): Buffer | undefined {
+function computeT(change: Change, B: Tree): SnapResult<Buffer | undefined> {
   switch (change.type) {
     case "put":
-      return Buffer.from(change.content, "base64");
+      return ok(Buffer.from(change.content, "base64"));
     case "delete":
-      return undefined;
+      return ok(undefined);
     case "text": {
       const existing = B.get(change.path);
       if (existing !== undefined && isText(existing)) {
         const baseTokens = tokenize(existing.toString("utf8"));
         const newTokens = applyEdit(baseTokens, change.edit);
-        return Buffer.from(newTokens.join(""), "utf8");
+        if (!newTokens.ok) return err(newTokens.error);
+        return ok(Buffer.from(newTokens.value.join(""), "utf8"));
       } else if (existing === undefined) {
         // Create from empty
         const newTokens = applyEdit([], change.edit);
-        return Buffer.from(newTokens.join(""), "utf8");
+        if (!newTokens.ok) return err(newTokens.error);
+        return ok(Buffer.from(newTokens.value.join(""), "utf8"));
       }
-      return undefined;
+      return ok(undefined);
     }
   }
 }
@@ -260,7 +267,7 @@ type IntegrationResult = {
  * B is the exact base tree for P.
  * appliedResultVectors: result vectors of all already-applied patches (for later-create-wins ordering)
  */
-function applyPatchToTree(patch: Patch, C: Tree, B: Tree): IntegrationResult {
+function applyPatchToTree(patch: Patch, C: Tree, B: Tree): SnapResult<IntegrationResult> {
   const warnings: Warning[] = [];
 
   // --- Step 1: Resolve namespace conflicts (SPEC §6.2) ---
@@ -331,7 +338,9 @@ function applyPatchToTree(patch: Patch, C: Tree, B: Tree): IntegrationResult {
     const C_bytes = C.get(path);
 
     // Compute T (authored result)
-    const T_bytes = computeT(change, B);
+    const T = computeT(change, B);
+    if (!T.ok) return err(T.error);
+    const T_bytes = T.value;
 
     // If this path was settled by the namespace rule (it's being installed)
     if (namespaceWinsInstall.has(path)) {
@@ -360,7 +369,7 @@ function applyPatchToTree(patch: Patch, C: Tree, B: Tree): IntegrationResult {
       } else {
         // delete: validate path exists in B
         if (B_bytes === undefined) {
-          throw errDeleteOfAbsentPath(path);
+          return err(errDeleteOfAbsentPath(path));
         }
         resultTree = resultTree.delete(path);
       }
@@ -398,7 +407,8 @@ function applyPatchToTree(patch: Patch, C: Tree, B: Tree): IntegrationResult {
       const Q = diff(bTokens, cTokens);
       const Pprime = transform(change.edit, Q);
       const newTokens = applyEdit(cTokens, Pprime);
-      const newContent = Buffer.from(newTokens.join(""), "utf8");
+      if (!newTokens.ok) return err(newTokens.error);
+      const newContent = Buffer.from(newTokens.value.join(""), "utf8");
       resultTree = resultTree.set(path, newContent);
       continue;
     }
@@ -459,7 +469,7 @@ function applyPatchToTree(patch: Patch, C: Tree, B: Tree): IntegrationResult {
     // C stays, no change to resultTree for this path
   }
 
-  return { tree: resultTree, warnings };
+  return ok({ tree: resultTree, warnings });
 }
 
 // ---------------------------------------------------------------------------
@@ -470,7 +480,7 @@ function applyPatchToTree(patch: Patch, C: Tree, B: Tree): IntegrationResult {
  * Replay all patches in snap order to produce the final tree.
  * SPEC §6.1–6.4
  */
-export function replay(repo: Repository): { tree: Tree; warnings: readonly Warning[] } {
+export function replay(repo: Repository): SnapResult<{ tree: Tree; warnings: readonly Warning[] }> {
   const patches = repo.patches;
   const frontier = repo.frontier;
 
@@ -490,7 +500,7 @@ export function replay(repo: Repository): { tree: Tree; warnings: readonly Warni
   for (const patch of patches) {
     const authorFrontier = frontier.get(patch.author) ?? 0;
     if (patch.revision > authorFrontier) {
-      throw errUnreachablePatch(formatVersionString(patchResultVector(patch)));
+      return err(errUnreachablePatch(formatVersionString(patchResultVector(patch))));
     }
   }
 
@@ -522,12 +532,14 @@ export function replay(repo: Repository): { tree: Tree; warnings: readonly Warni
     appliedDots.add(`${patch.author}@${patch.revision}`);
 
     // Materialize the exact base tree for this patch
-    const B = materializeBaseTree(appliedPatches, patch.base);
+    const baseTree = materializeBaseTree(appliedPatches, patch.base);
+    if (!baseTree.ok) return err(baseTree.error);
 
     // Apply the patch with OT
-    const result = applyPatchToTree(patch, currentTree, B);
-    currentTree = result.tree;
-    allWarnings.push(...result.warnings);
+    const result = applyPatchToTree(patch, currentTree, baseTree.value);
+    if (!result.ok) return err(result.error);
+    currentTree = result.value.tree;
+    allWarnings.push(...result.value.warnings);
 
     appliedPatches.push(patch);
 
@@ -543,7 +555,7 @@ export function replay(repo: Repository): { tree: Tree; warnings: readonly Warni
 
   // If there are still remaining patches, the history has a cycle or is incomplete
   if (remaining.size > 0) {
-    throw errCyclicOrIncompletePatchHistory();
+    return err(errCyclicOrIncompletePatchHistory());
   }
 
   // Sort warnings by path, then reason
@@ -566,7 +578,7 @@ export function replay(repo: Repository): { tree: Tree; warnings: readonly Warni
     }
   }
 
-  return { tree: currentTree, warnings: uniqueWarnings };
+  return ok({ tree: currentTree, warnings: uniqueWarnings });
 }
 
 // ---------------------------------------------------------------------------
@@ -580,7 +592,7 @@ export function replay(repo: Repository): { tree: Tree; warnings: readonly Warni
 export function joinRepositories(
   local: Repository,
   remote: Repository,
-): { repo: Repository; warnings: readonly Warning[] } {
+): SnapResult<{ repo: Repository; warnings: readonly Warning[] }> {
   // Step 1: Check for patch collisions (same dot with different values)
   const localPatchMap = new Map<string, Patch>();
   for (const p of local.patches) {
@@ -593,7 +605,7 @@ export function joinRepositories(
     if (localPatch !== undefined) {
       // Check structural equality
       if (!patchesEqual(localPatch, remotePatch)) {
-        throw errPatchCollision(remotePatch.author, remotePatch.revision);
+        return err(errPatchCollision(remotePatch.author, remotePatch.revision));
       }
     }
   }
@@ -627,9 +639,10 @@ export function joinRepositories(
   };
 
   // Step 5: Replay to get final tree and warnings
-  const { warnings } = replay(mergedRepo);
+  const replayed = replay(mergedRepo);
+  if (!replayed.ok) return err(replayed.error);
 
-  return { repo: mergedRepo, warnings };
+  return ok({ repo: mergedRepo, warnings: replayed.value.warnings });
 }
 
 // ---------------------------------------------------------------------------

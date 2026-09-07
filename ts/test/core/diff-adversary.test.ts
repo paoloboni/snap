@@ -19,6 +19,7 @@ import { isText, tokenize, isCanonical } from "../../src/core/tokens.js";
 import { diffReference, diffHirschberg } from "../../src/core/diff.js";
 import { validateEdit, applyEdit } from "../../src/core/edit.js";
 import { transform } from "../../src/core/ot.js";
+import { assertOk, assertErr } from "../helpers/result.js";
 import type { Tokens } from "../../src/core/tokens.js";
 import type { DiffScript } from "../../src/core/diff.js";
 
@@ -371,9 +372,7 @@ void describe("ADV edit.ts — validateEdit", () => {
   void test("ADV-B-031: validateEdit([], []) passes — empty is valid", () => {
     // SPEC.md §4.4:270: "An empty script is valid only when creating an empty text file."
     // Empty base + empty script: consumed=0, baseLen=0 → valid.
-    assert.doesNotThrow(() => {
-      validateEdit([], []);
-    });
+    assertOk(validateEdit([], []));
   });
 
   // ADV-B-032: adjacent retain ops → must throw
@@ -384,9 +383,7 @@ void describe("ADV edit.ts — validateEdit", () => {
       { type: "retain", count: 1 },
       { type: "retain", count: 1 },
     ];
-    assert.throws(() => {
-      validateEdit(base, script);
-    }, "adjacent retains must throw");
+    assertErr(validateEdit(base, script), "adjacent retains must throw");
   });
 
   // ADV-B-033: adjacent delete ops → must throw
@@ -397,9 +394,7 @@ void describe("ADV edit.ts — validateEdit", () => {
       { type: "delete", count: 1 },
       { type: "delete", count: 1 },
     ];
-    assert.throws(() => {
-      validateEdit(base, script);
-    }, "adjacent deletes must throw");
+    assertErr(validateEdit(base, script), "adjacent deletes must throw");
   });
 
   // ADV-B-034: count = 0 → must throw (not a positive integer)
@@ -407,9 +402,7 @@ void describe("ADV edit.ts — validateEdit", () => {
     // SPEC.md §4.4:264: "Counts are positive safe integers." Zero is not positive.
     const base: Tokens = ["a\n"];
     const script: DiffScript = [{ type: "retain", count: 0 }];
-    assert.throws(() => {
-      validateEdit(base, script);
-    }, "count=0 must throw — not a positive safe integer");
+    assertErr(validateEdit(base, script), "count=0 must throw — not a positive safe integer");
   });
 
   // ADV-B-035: count = Number.MAX_SAFE_INTEGER + 1 → must throw (exceeds safe integer)
@@ -418,9 +411,7 @@ void describe("ADV edit.ts — validateEdit", () => {
     // MAX_SAFE_INTEGER+1 = 9007199254740992, which is NOT a safe integer.
     const base: Tokens = ["a\n"];
     const script: DiffScript = [{ type: "retain", count: Number.MAX_SAFE_INTEGER + 1 }];
-    assert.throws(() => {
-      validateEdit(base, script);
-    }, "count > MAX_SAFE_INTEGER must throw");
+    assertErr(validateEdit(base, script), "count > MAX_SAFE_INTEGER must throw");
   });
 
   // ADV-B-036: insert with empty token [""] → must throw
@@ -428,9 +419,7 @@ void describe("ADV edit.ts — validateEdit", () => {
     // SPEC.md §4.4:261: "inserts one or more nonempty text tokens"
     const base: Tokens = [];
     const script: DiffScript = [{ type: "insert", tokens: [""] }];
-    assert.throws(() => {
-      validateEdit(base, script);
-    }, "insert with empty-string token must throw");
+    assertErr(validateEdit(base, script), "insert with empty-string token must throw");
   });
 
   // ADV-B-037: script that under-consumes base → must throw
@@ -438,9 +427,7 @@ void describe("ADV edit.ts — validateEdit", () => {
     // SPEC.md §4.4:265: "The script MUST consume the complete old token sequence"
     const base: Tokens = ["a\n", "b\n"];
     const script: DiffScript = [{ type: "retain", count: 1 }]; // only consumes 1 of 2
-    assert.throws(() => {
-      validateEdit(base, script);
-    }, "under-consuming script must throw");
+    assertErr(validateEdit(base, script), "under-consuming script must throw");
   });
 
   // ADV-B-038: script that over-consumes base → must throw
@@ -448,9 +435,7 @@ void describe("ADV edit.ts — validateEdit", () => {
     // SPEC.md §4.4:265: "The script MUST consume the complete old token sequence"
     const base: Tokens = ["a\n"];
     const script: DiffScript = [{ type: "retain", count: 2 }]; // tries to consume 2, only 1 exists
-    assert.throws(() => {
-      validateEdit(base, script);
-    }, "over-consuming script must throw");
+    assertErr(validateEdit(base, script), "over-consuming script must throw");
   });
 
   // ADV-B-039: insert tokens = [] (zero-length array) → must throw
@@ -458,9 +443,7 @@ void describe("ADV edit.ts — validateEdit", () => {
     // SPEC.md §4.4:261: "inserts one or more nonempty text tokens" — zero tokens is invalid.
     const base: Tokens = [];
     const script: DiffScript = [{ type: "insert", tokens: [] }];
-    assert.throws(() => {
-      validateEdit(base, script);
-    }, "insert with zero tokens must throw");
+    assertErr(validateEdit(base, script), "insert with zero tokens must throw");
   });
 
   // ADV-B-040: non-integer count (1.5) → must throw
@@ -468,9 +451,7 @@ void describe("ADV edit.ts — validateEdit", () => {
     // SPEC.md §4.4:264: "positive safe integers" — 1.5 is not an integer.
     const base: Tokens = ["a\n", "b\n"];
     const script: DiffScript = [{ type: "retain", count: 1.5 }];
-    assert.throws(() => {
-      validateEdit(base, script);
-    }, "non-integer count must throw");
+    assertErr(validateEdit(base, script), "non-integer count must throw");
   });
 
   // ADV-B-041: negative count → must throw
@@ -478,9 +459,7 @@ void describe("ADV edit.ts — validateEdit", () => {
     // SPEC.md §4.4:264: "positive safe integers" — negative is not positive.
     const base: Tokens = ["a\n"];
     const script: DiffScript = [{ type: "delete", count: -1 }];
-    assert.throws(() => {
-      validateEdit(base, script);
-    }, "negative count must throw");
+    assertErr(validateEdit(base, script), "negative count must throw");
   });
 });
 
@@ -497,9 +476,9 @@ void describe("ADV ot.ts — transform", () => {
     expectedFinal: Tokens,
     label: string,
   ): void {
-    const afterQ = applyEdit(base, Q) as Tokens;
+    const afterQ = assertOk(applyEdit(base, Q));
     const Pprime = transform(P, Q);
-    const final = applyEdit(afterQ, Pprime) as Tokens;
+    const final = assertOk(applyEdit(afterQ, Pprime));
     assert.deepEqual(
       final,
       [...expectedFinal],
@@ -763,9 +742,9 @@ void describe("ADV end-to-end: diff feeds OT — coherence check", () => {
     const expected = tokText(expectedText);
     const P = diffReference(base, alice);
     const Q = diffReference(base, bob);
-    const afterQ = applyEdit(base, Q) as Tokens;
+    const afterQ = assertOk(applyEdit(base, Q));
     const Pprime = transform(P, Q);
-    const final = applyEdit(afterQ, Pprime) as Tokens;
+    const final = assertOk(applyEdit(afterQ, Pprime));
     assert.deepEqual(
       final,
       [...expected],

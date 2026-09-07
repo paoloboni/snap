@@ -3,6 +3,8 @@
 
 import { findRepository, readRepository } from "../repo/store.js";
 import { errNotARepository, errUnsupportedEntry } from "../errors.js";
+import type { SnapResult } from "../errors.js";
+import { ok, err } from "../result.js";
 import { replay } from "../repo/replay.js";
 import { scanWorktree } from "../fsys/worktree.js";
 import { formatVersionString } from "../core/version.js";
@@ -22,23 +24,30 @@ import { S } from "../present/sgr.js";
  *   Then for each change: "  " + S(color,symbol) + " " + path + " " + S(2,"(label)") + LF
  *   Or when clean: "  " + S(32,"✓") + " Working tree clean" + LF
  */
-export async function run(cwd: string): Promise<number> {
+export async function run(cwd: string): Promise<SnapResult<number>> {
   const repoDir = findRepository(cwd);
   if (repoDir === null) {
-    throw errNotARepository();
+    return err(errNotARepository());
   }
 
-  const repo = await readRepository(repoDir);
-  const { tree: currentTree } = replay(repo);
+  const repoResult = await readRepository(repoDir);
+  if (!repoResult.ok) return err(repoResult.error);
+  const repo = repoResult.value;
+
+  const replayed = replay(repo);
+  if (!replayed.ok) return err(replayed.error);
+  const currentTree = replayed.value.tree;
   const versionStr = formatVersionString(repo.frontier);
 
   // Scan working tree
-  const entries = await scanWorktree(repoDir);
+  const scanned = await scanWorktree(repoDir);
+  if (!scanned.ok) return err(scanned.error);
+  const entries = scanned.value;
 
   // Check for unsupported entries first
   for (const entry of entries) {
     if (entry.type === "unsupported") {
-      throw errUnsupportedEntry(entry.path);
+      return err(errUnsupportedEntry(entry.path));
     }
   }
 
@@ -113,5 +122,5 @@ export async function run(cwd: string): Promise<number> {
     }
   }
 
-  return 0;
+  return ok(0);
 }

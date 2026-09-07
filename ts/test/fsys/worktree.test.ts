@@ -8,6 +8,7 @@ import * as nodePath from "node:path";
 import * as os from "node:os";
 
 import { scanWorktree, classifyWorktree } from "../../src/fsys/worktree.js";
+import { assertOk } from "../helpers/result.js";
 import { emptyTree, treeFromEntries } from "../../src/core/tree.js";
 
 // ---------------------------------------------------------------------------
@@ -26,7 +27,7 @@ void describe("scanWorktree — basic scanning", () => {
   void it("returns empty list for empty directory", async () => {
     const dir = await makeTempDir();
     try {
-      const entries = await scanWorktree(dir);
+      const entries = assertOk(await scanWorktree(dir));
       assert.deepEqual(entries, []);
     } finally {
       await fs.rm(dir, { recursive: true, force: true });
@@ -39,7 +40,7 @@ void describe("scanWorktree — basic scanning", () => {
       await fs.writeFile(nodePath.join(dir, "a.txt"), "hello\n");
       await fs.writeFile(nodePath.join(dir, "b.txt"), "world\n");
 
-      const entries = await scanWorktree(dir);
+      const entries = assertOk(await scanWorktree(dir));
       assert.strictEqual(entries.length, 2);
 
       const entry0 = entries[0]!;
@@ -61,7 +62,7 @@ void describe("scanWorktree — basic scanning", () => {
       await fs.writeFile(nodePath.join(dir, ".snap/repository.json"), "{}");
       await fs.writeFile(nodePath.join(dir, "tracked.txt"), "data\n");
 
-      const entries = await scanWorktree(dir);
+      const entries = assertOk(await scanWorktree(dir));
       assert.strictEqual(entries.length, 1);
       assert.strictEqual(entries[0]!.type, "tracked");
       assert.strictEqual(entries[0]!.path, "tracked.txt");
@@ -76,7 +77,7 @@ void describe("scanWorktree — basic scanning", () => {
       await fs.mkdir(nodePath.join(dir, "empty-dir"), { recursive: true });
       await fs.mkdir(nodePath.join(dir, "nested/also-empty"), { recursive: true });
 
-      const entries = await scanWorktree(dir);
+      const entries = assertOk(await scanWorktree(dir));
       assert.deepEqual(entries, [], "Empty directories should not be tracked");
     } finally {
       await fs.rm(dir, { recursive: true, force: true });
@@ -90,7 +91,7 @@ void describe("scanWorktree — basic scanning", () => {
       await fs.writeFile(nodePath.join(dir, "root.txt"), "root\n");
       await fs.writeFile(nodePath.join(dir, "sub/child.txt"), "child\n");
 
-      const entries = await scanWorktree(dir);
+      const entries = assertOk(await scanWorktree(dir));
       assert.strictEqual(entries.length, 2);
 
       const paths = entries.map((e) => e.path);
@@ -109,7 +110,7 @@ void describe("scanWorktree — basic scanning", () => {
       await fs.writeFile(nodePath.join(dir, "a.txt"), "a\n");
       await fs.writeFile(nodePath.join(dir, "m.txt"), "m\n");
 
-      const entries = await scanWorktree(dir);
+      const entries = assertOk(await scanWorktree(dir));
       const paths = entries.map((e) => e.path);
       assert.deepEqual(paths, ["a.txt", "m.txt", "z.txt"]);
     } finally {
@@ -122,7 +123,7 @@ void describe("scanWorktree — basic scanning", () => {
     try {
       await fs.symlink("missing-target", nodePath.join(dir, "link"));
 
-      const entries = await scanWorktree(dir);
+      const entries = assertOk(await scanWorktree(dir));
       assert.strictEqual(entries.length, 1);
       assert.strictEqual(entries[0]!.type, "unsupported");
       assert.strictEqual(entries[0]!.path, "link");
@@ -137,7 +138,7 @@ void describe("scanWorktree — basic scanning", () => {
       const bytes = Buffer.from([0x01, 0x02, 0x03, 0xff]);
       await fs.writeFile(nodePath.join(dir, "bin.dat"), bytes);
 
-      const entries = await scanWorktree(dir);
+      const entries = assertOk(await scanWorktree(dir));
       assert.strictEqual(entries.length, 1);
       const entry = entries[0]!;
       assert.strictEqual(entry.type, "tracked");
@@ -161,7 +162,7 @@ void describe("classifyWorktree — clean working tree", () => {
       await fs.writeFile(nodePath.join(dir, "f.txt"), "hello\n");
 
       const tree = treeFromEntries([["f.txt", Buffer.from("hello\n", "utf8")]]);
-      const status = await classifyWorktree(dir, tree);
+      const status = assertOk(await classifyWorktree(dir, tree));
       assert.strictEqual(status.type, "clean");
     } finally {
       await fs.rm(dir, { recursive: true, force: true });
@@ -171,7 +172,7 @@ void describe("classifyWorktree — clean working tree", () => {
   void it("returns clean for empty working tree and empty current tree", async () => {
     const dir = await makeTempDir();
     try {
-      const status = await classifyWorktree(dir, emptyTree());
+      const status = assertOk(await classifyWorktree(dir, emptyTree()));
       assert.strictEqual(status.type, "clean");
     } finally {
       await fs.rm(dir, { recursive: true, force: true });
@@ -187,7 +188,7 @@ void describe("classifyWorktree — clean working tree", () => {
       await fs.writeFile(nodePath.join(dir, "f.txt"), "data\n");
 
       const tree = treeFromEntries([["f.txt", Buffer.from("data\n", "utf8")]]);
-      const status = await classifyWorktree(dir, tree);
+      const status = assertOk(await classifyWorktree(dir, tree));
       assert.strictEqual(status.type, "clean");
     } finally {
       await fs.rm(dir, { recursive: true, force: true });
@@ -201,7 +202,7 @@ void describe("classifyWorktree — dirty working tree", () => {
     try {
       await fs.writeFile(nodePath.join(dir, "new.txt"), "new\n");
 
-      const status = await classifyWorktree(dir, emptyTree());
+      const status = assertOk(await classifyWorktree(dir, emptyTree()));
       assert.strictEqual(status.type, "dirty");
     } finally {
       await fs.rm(dir, { recursive: true, force: true });
@@ -214,7 +215,7 @@ void describe("classifyWorktree — dirty working tree", () => {
       await fs.writeFile(nodePath.join(dir, "f.txt"), "modified\n");
 
       const tree = treeFromEntries([["f.txt", Buffer.from("original\n", "utf8")]]);
-      const status = await classifyWorktree(dir, tree);
+      const status = assertOk(await classifyWorktree(dir, tree));
       assert.strictEqual(status.type, "dirty");
     } finally {
       await fs.rm(dir, { recursive: true, force: true });
@@ -226,7 +227,7 @@ void describe("classifyWorktree — dirty working tree", () => {
     try {
       // Working tree is empty, but current tree has a file
       const tree = treeFromEntries([["deleted.txt", Buffer.from("gone\n", "utf8")]]);
-      const status = await classifyWorktree(dir, tree);
+      const status = assertOk(await classifyWorktree(dir, tree));
       assert.strictEqual(status.type, "dirty");
     } finally {
       await fs.rm(dir, { recursive: true, force: true });
@@ -239,7 +240,7 @@ void describe("classifyWorktree — dirty working tree", () => {
       await fs.writeFile(nodePath.join(dir, "a.txt"), "a\n");
       await fs.writeFile(nodePath.join(dir, "b.txt"), "b\n");
 
-      const status = await classifyWorktree(dir, emptyTree());
+      const status = assertOk(await classifyWorktree(dir, emptyTree()));
       assert.strictEqual(status.type, "dirty");
       // Cast to access entries after type check
       const dirty = status as { type: "dirty"; entries: readonly unknown[] };
@@ -256,7 +257,7 @@ void describe("classifyWorktree — unsupported entries", () => {
     try {
       await fs.symlink("missing", nodePath.join(dir, "link"));
 
-      const status = await classifyWorktree(dir, emptyTree());
+      const status = assertOk(await classifyWorktree(dir, emptyTree()));
       assert.strictEqual(status.type, "unsupported");
       // Cast to access paths after type check
       const unsupported = status as { type: "unsupported"; paths: readonly string[] };
@@ -275,7 +276,7 @@ void describe("classifyWorktree — unsupported entries", () => {
 
       // Current tree does not have dirty.txt, so it would be dirty
       // But unsupported (symlink) takes priority
-      const status = await classifyWorktree(dir, emptyTree());
+      const status = assertOk(await classifyWorktree(dir, emptyTree()));
       assert.strictEqual(status.type, "unsupported", "unsupported should take priority over dirty");
     } finally {
       await fs.rm(dir, { recursive: true, force: true });
@@ -288,7 +289,7 @@ void describe("classifyWorktree — unsupported entries", () => {
       await fs.symlink("missing", nodePath.join(dir, "z-link"));
       await fs.symlink("missing", nodePath.join(dir, "a-link"));
 
-      const status = await classifyWorktree(dir, emptyTree());
+      const status = assertOk(await classifyWorktree(dir, emptyTree()));
       assert.strictEqual(status.type, "unsupported");
       // Cast to access paths after type check
       const unsupported2 = status as { type: "unsupported"; paths: readonly string[] };
@@ -306,7 +307,7 @@ void describe("classifyWorktree — empty directories not tracked", () => {
       await fs.mkdir(nodePath.join(dir, "empty-dir"), { recursive: true });
 
       // Empty tree should match (empty dirs are not tracked)
-      const status = await classifyWorktree(dir, emptyTree());
+      const status = assertOk(await classifyWorktree(dir, emptyTree()));
       assert.strictEqual(status.type, "clean");
     } finally {
       await fs.rm(dir, { recursive: true, force: true });

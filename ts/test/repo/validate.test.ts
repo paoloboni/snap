@@ -3,24 +3,19 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import { validateRepository } from "../../src/repo/validate.js";
-import { SnapError } from "../../src/errors.js";
+import type { Repository } from "../../src/repo/model.js";
+import { assertOk, assertErr, expectErr } from "../helpers/result.js";
 
 // ---------------------------------------------------------------------------
 // Helper: run validateRepository and check for a SnapError with a substring
 // ---------------------------------------------------------------------------
 
+function validRepo(data: unknown): Repository {
+  return assertOk(validateRepository(data));
+}
+
 function expectError(data: unknown, substring: string): void {
-  assert.throws(
-    () => validateRepository(data),
-    (e: unknown) => {
-      assert.ok(e instanceof SnapError, `Expected SnapError, got ${String(e)}`);
-      assert.ok(
-        e.message.includes(substring),
-        `Expected message to contain "${substring}", got: "${e.message}"`,
-      );
-      return true;
-    },
-  );
+  expectErr(validateRepository(data), substring);
 }
 
 // ---------------------------------------------------------------------------
@@ -29,14 +24,14 @@ function expectError(data: unknown, substring: string): void {
 
 void describe("validateRepository — valid cases", () => {
   void it("accepts empty repository", () => {
-    const repo = validateRepository({ format: 1, frontier: [], patches: [] });
+    const repo = validRepo({ format: 1, frontier: [], patches: [] });
     assert.strictEqual(repo.format, 1);
     assert.strictEqual(repo.frontier.size, 0);
     assert.strictEqual(repo.patches.length, 0);
   });
 
   void it("accepts single patch with text change creating a file", () => {
-    const repo = validateRepository({
+    const repo = validRepo({
       format: 1,
       frontier: [["a@x", 1]],
       patches: [
@@ -53,7 +48,7 @@ void describe("validateRepository — valid cases", () => {
   });
 
   void it("accepts single patch with put change", () => {
-    const repo = validateRepository({
+    const repo = validRepo({
       format: 1,
       frontier: [["a@x", 1]],
       patches: [
@@ -70,7 +65,7 @@ void describe("validateRepository — valid cases", () => {
   });
 
   void it("accepts empty text edit creating empty file", () => {
-    const repo = validateRepository({
+    const repo = validRepo({
       format: 1,
       frontier: [["a@x", 1]],
       patches: [
@@ -87,7 +82,7 @@ void describe("validateRepository — valid cases", () => {
   });
 
   void it("accepts patch with delete change", () => {
-    const repo = validateRepository({
+    const repo = validRepo({
       format: 1,
       frontier: [["a@x", 2]],
       patches: [
@@ -111,7 +106,7 @@ void describe("validateRepository — valid cases", () => {
   });
 
   void it("accepts multiple patches from different authors", () => {
-    const repo = validateRepository({
+    const repo = validRepo({
       format: 1,
       frontier: [
         ["a@x", 1],
@@ -138,7 +133,7 @@ void describe("validateRepository — valid cases", () => {
   });
 
   void it("parses frontier into a ReadonlyMap", () => {
-    const repo = validateRepository({
+    const repo = validRepo({
       format: 1,
       frontier: [["a@x", 3]],
       patches: [
@@ -270,17 +265,17 @@ void describe("validateRepository — format validation", () => {
 
   void it("rejects format:2 (unsupported version)", () => {
     const data = { format: 2, frontier: [], patches: [] };
-    assert.throws(() => validateRepository(data), SnapError);
+    assertErr(validateRepository(data));
   });
 
   void it("rejects format:0", () => {
     const data = { format: 0, frontier: [], patches: [] };
-    assert.throws(() => validateRepository(data), SnapError);
+    assertErr(validateRepository(data));
   });
 
   void it("rejects string format", () => {
     const data = { format: "1", frontier: [], patches: [] };
-    assert.throws(() => validateRepository(data), SnapError);
+    assertErr(validateRepository(data));
   });
 });
 
@@ -311,7 +306,7 @@ void describe("validateRepository — patch sorting", () => {
         },
       ],
     };
-    assert.throws(() => validateRepository(data), SnapError);
+    assertErr(validateRepository(data));
   });
 
   void it("rejects patches with authors out of UTF-8 byte order", () => {
@@ -339,7 +334,7 @@ void describe("validateRepository — patch sorting", () => {
         },
       ],
     };
-    assert.throws(() => validateRepository(data), SnapError);
+    assertErr(validateRepository(data));
   });
 });
 
@@ -383,7 +378,7 @@ void describe("validateRepository — message validation", () => {
         },
       ],
     };
-    assert.throws(() => validateRepository(data), SnapError);
+    assertErr(validateRepository(data));
   });
 
   void it("rejects message with BEL control character", () => {
@@ -400,11 +395,11 @@ void describe("validateRepository — message validation", () => {
         },
       ],
     };
-    assert.throws(() => validateRepository(data), SnapError);
+    assertErr(validateRepository(data));
   });
 
   void it("accepts message with TAB", () => {
-    const repo = validateRepository({
+    const repo = validRepo({
       format: 1,
       frontier: [["a@x", 1]],
       patches: [
@@ -421,7 +416,7 @@ void describe("validateRepository — message validation", () => {
   });
 
   void it("accepts message with LF", () => {
-    const repo = validateRepository({
+    const repo = validRepo({
       format: 1,
       frontier: [["a@x", 1]],
       patches: [
@@ -460,7 +455,7 @@ void describe("validateRepository — message validation", () => {
     // Per SPEC §4.2: "snap commit limits user-supplied messages to 4096 bytes"
     // The validation pipeline does not enforce this limit on stored patches.
     const msg = "a".repeat(4096);
-    const repo = validateRepository({
+    const repo = validRepo({
       format: 1,
       frontier: [["a@x", 1]],
       patches: [
@@ -480,7 +475,7 @@ void describe("validateRepository — message validation", () => {
     // The 4096-byte limit is for snap commit, not for stored validation.
     // Generated revert messages may be longer (SPEC §4.2).
     const msg = "a".repeat(4097);
-    const repo = validateRepository({
+    const repo = validRepo({
       format: 1,
       frontier: [["a@x", 1]],
       patches: [
@@ -849,7 +844,7 @@ void describe("validateRepository — path validation", () => {
         },
       ],
     };
-    assert.throws(() => validateRepository(data), SnapError);
+    assertErr(validateRepository(data));
   });
 });
 
@@ -878,7 +873,7 @@ void describe("validateRepository — base64 validation", () => {
   });
 
   void it("accepts valid padded base64", () => {
-    const repo = validateRepository({
+    const repo = validRepo({
       format: 1,
       frontier: [["a@x", 1]],
       patches: [
@@ -1058,7 +1053,7 @@ void describe("validateRepository — text edit on binary base (DEC-018)", () =>
         },
       ],
     };
-    assert.throws(() => validateRepository(data), SnapError);
+    assertErr(validateRepository(data));
   });
 });
 
@@ -1081,6 +1076,6 @@ void describe("validateRepository — revision contiguity", () => {
         },
       ],
     };
-    assert.throws(() => validateRepository(data), SnapError);
+    assertErr(validateRepository(data));
   });
 });

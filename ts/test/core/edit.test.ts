@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { validateEdit, applyEdit } from "../../src/core/edit.js";
 import type { Tokens } from "../../src/core/tokens.js";
 import type { DiffScript } from "../../src/core/diff.js";
-import { SnapError } from "../../src/errors.js";
+import { assertOk, assertErr, expectErr } from "../helpers/result.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -29,19 +29,7 @@ function tok(text: string): Tokens {
   return tokens;
 }
 
-function expectSnapError(fn: () => void, substring: string): void {
-  let caught: unknown;
-  try {
-    fn();
-  } catch (e) {
-    caught = e;
-  }
-  assert.ok(caught instanceof SnapError, `expected SnapError, got: ${String(caught)}`);
-  assert.ok(
-    caught.message.includes(substring),
-    `expected message to include '${substring}', got: '${caught.message}'`,
-  );
-}
+const expectSnapError = expectErr;
 
 // ---------------------------------------------------------------------------
 // Valid application
@@ -49,25 +37,25 @@ function expectSnapError(fn: () => void, substring: string): void {
 
 void describe("applyEdit — valid cases", () => {
   void test("empty script on empty base", () => {
-    const result = applyEdit([], []);
+    const result = assertOk(applyEdit([], []));
     assert.deepEqual(result, []);
   });
 
   void test("all-insert script on empty base", () => {
     const script: DiffScript = [{ type: "insert", tokens: ["hello\n"] }];
-    assert.deepEqual(applyEdit([], script), ["hello\n"]);
+    assert.deepEqual(assertOk(applyEdit([], script)), ["hello\n"]);
   });
 
   void test("retain all tokens", () => {
     const base = tok("a\nb\nc\n");
     const script: DiffScript = [{ type: "retain", count: 3 }];
-    assert.deepEqual(applyEdit(base, script), [...base]);
+    assert.deepEqual(assertOk(applyEdit(base, script)), [...base]);
   });
 
   void test("delete all tokens", () => {
     const base = tok("a\nb\nc\n");
     const script: DiffScript = [{ type: "delete", count: 3 }];
-    assert.deepEqual(applyEdit(base, script), []);
+    assert.deepEqual(assertOk(applyEdit(base, script)), []);
   });
 
   void test("retain then insert", () => {
@@ -76,7 +64,7 @@ void describe("applyEdit — valid cases", () => {
       { type: "retain", count: 2 },
       { type: "insert", tokens: ["c\n"] },
     ];
-    assert.deepEqual(applyEdit(base, script), ["a\n", "b\n", "c\n"]);
+    assert.deepEqual(assertOk(applyEdit(base, script)), ["a\n", "b\n", "c\n"]);
   });
 
   void test("delete then insert", () => {
@@ -85,7 +73,7 @@ void describe("applyEdit — valid cases", () => {
       { type: "delete", count: 2 },
       { type: "insert", tokens: ["x\n", "y\n"] },
     ];
-    assert.deepEqual(applyEdit(base, script), ["x\n", "y\n"]);
+    assert.deepEqual(assertOk(applyEdit(base, script)), ["x\n", "y\n"]);
   });
 
   void test("test-05 script: delete(1), retain(2), insert(['a'])", () => {
@@ -95,7 +83,7 @@ void describe("applyEdit — valid cases", () => {
       { type: "retain", count: 2 },
       { type: "insert", tokens: ["a"] },
     ];
-    assert.deepEqual(applyEdit(base, script), ["b\n", "a\n", "a"]);
+    assert.deepEqual(assertOk(applyEdit(base, script)), ["b\n", "a\n", "a"]);
   });
 
   void test("complex mixed script", () => {
@@ -106,7 +94,7 @@ void describe("applyEdit — valid cases", () => {
       { type: "delete", count: 2 },
       { type: "retain", count: 2 },
     ];
-    assert.deepEqual(applyEdit(base, script), ["0\n", "3\n", "4\n"]);
+    assert.deepEqual(assertOk(applyEdit(base, script)), ["0\n", "3\n", "4\n"]);
   });
 
   void test("insert before retain", () => {
@@ -115,7 +103,7 @@ void describe("applyEdit — valid cases", () => {
       { type: "insert", tokens: ["X\n"] },
       { type: "retain", count: 1 },
     ];
-    assert.deepEqual(applyEdit(base, script), ["X\n", "a\n"]);
+    assert.deepEqual(assertOk(applyEdit(base, script)), ["X\n", "a\n"]);
   });
 });
 
@@ -127,13 +115,13 @@ void describe("validateEdit — over-consumption", () => {
   void test("retain beyond end throws 'consumes beyond old content'", () => {
     const base = tok("a\n");
     const script: DiffScript = [{ type: "retain", count: 2 }];
-    expectSnapError(() => validateEdit(base, script), "consumes beyond old content");
+    expectSnapError(validateEdit(base, script), "consumes beyond old content");
   });
 
   void test("delete beyond end throws 'consumes beyond old content'", () => {
     const base = tok("a\n");
     const script: DiffScript = [{ type: "delete", count: 2 }];
-    expectSnapError(() => validateEdit(base, script), "consumes beyond old content");
+    expectSnapError(validateEdit(base, script), "consumes beyond old content");
   });
 
   void test("retain + retain (if valid count each) consumes beyond throws", () => {
@@ -145,7 +133,7 @@ void describe("validateEdit — over-consumption", () => {
       { type: "retain", count: 1 },
       { type: "delete", count: 1 },
     ];
-    expectSnapError(() => validateEdit(base, script), "consumes beyond old content");
+    expectSnapError(validateEdit(base, script), "consumes beyond old content");
   });
 });
 
@@ -156,19 +144,19 @@ void describe("validateEdit — over-consumption", () => {
 void describe("validateEdit — under-consumption", () => {
   void test("empty script on non-empty base throws 'does not consume old content'", () => {
     const base = tok("a\n");
-    expectSnapError(() => validateEdit(base, []), "does not consume old content");
+    expectSnapError(validateEdit(base, []), "does not consume old content");
   });
 
   void test("partial script throws 'does not consume old content'", () => {
     const base = tok("a\nb\nc\n");
     const script: DiffScript = [{ type: "retain", count: 2 }];
-    expectSnapError(() => validateEdit(base, script), "does not consume old content");
+    expectSnapError(validateEdit(base, script), "does not consume old content");
   });
 
   void test("insert-only script on non-empty base throws 'does not consume old content'", () => {
     const base = tok("a\n");
     const script: DiffScript = [{ type: "insert", tokens: ["b\n"] }];
-    expectSnapError(() => validateEdit(base, script), "does not consume old content");
+    expectSnapError(validateEdit(base, script), "does not consume old content");
   });
 });
 
@@ -183,7 +171,7 @@ void describe("validateEdit — adjacent same-kind operations", () => {
       { type: "insert", tokens: ["a\n"] },
       { type: "insert", tokens: ["b\n"] },
     ];
-    expectSnapError(() => validateEdit(base, script), "adjacent insert");
+    expectSnapError(validateEdit(base, script), "adjacent insert");
   });
 
   void test("adjacent retains throw", () => {
@@ -193,28 +181,16 @@ void describe("validateEdit — adjacent same-kind operations", () => {
       { type: "retain", count: 1 },
     ];
     // Adjacent retain-retain is forbidden per SPEC §4.4
-    let caught: unknown;
-    try {
-      validateEdit(base, script);
-    } catch (e) {
-      caught = e;
-    }
-    assert.ok(caught instanceof SnapError, "expected SnapError for adjacent retains");
+    assertErr(validateEdit(base, script));
   });
 
-  void test("adjacent deletes throw", () => {
+  void test("adjacent deletes are rejected", () => {
     const base = tok("a\nb\n");
     const script: DiffScript = [
       { type: "delete", count: 1 },
       { type: "delete", count: 1 },
     ];
-    let caught: unknown;
-    try {
-      validateEdit(base, script);
-    } catch (e) {
-      caught = e;
-    }
-    assert.ok(caught instanceof SnapError, "expected SnapError for adjacent deletes");
+    assertErr(validateEdit(base, script));
   });
 });
 
@@ -226,25 +202,25 @@ void describe("validateEdit — invalid counts", () => {
   void test("retain count of 0 throws 'positive safe integer'", () => {
     const base = tok("a\n");
     const script: DiffScript = [{ type: "retain", count: 0 }];
-    expectSnapError(() => validateEdit(base, script), "positive safe integer");
+    expectSnapError(validateEdit(base, script), "positive safe integer");
   });
 
   void test("delete count of 0 throws 'positive safe integer'", () => {
     const base: Tokens = [];
     const script: DiffScript = [{ type: "delete", count: 0 }];
-    expectSnapError(() => validateEdit(base, script), "positive safe integer");
+    expectSnapError(validateEdit(base, script), "positive safe integer");
   });
 
   void test("retain count of -1 throws 'positive safe integer'", () => {
     const base = tok("a\n");
     const script: DiffScript = [{ type: "retain", count: -1 }];
-    expectSnapError(() => validateEdit(base, script), "positive safe integer");
+    expectSnapError(validateEdit(base, script), "positive safe integer");
   });
 
   void test("delete count larger than MAX_SAFE_INTEGER throws 'positive safe integer'", () => {
     const base: Tokens = [];
     const script: DiffScript = [{ type: "delete", count: Number.MAX_SAFE_INTEGER + 1 }];
-    expectSnapError(() => validateEdit(base, script), "positive safe integer");
+    expectSnapError(validateEdit(base, script), "positive safe integer");
   });
 });
 
@@ -256,13 +232,13 @@ void describe("validateEdit — empty insert tokens", () => {
   void test("empty insert array throws 'insert is empty'", () => {
     const base: Tokens = [];
     const script: DiffScript = [{ type: "insert", tokens: [] }];
-    expectSnapError(() => validateEdit(base, script), "insert is empty");
+    expectSnapError(validateEdit(base, script), "insert is empty");
   });
 
   void test("insert with empty string token throws 'insert is empty'", () => {
     const base: Tokens = [];
     const script: DiffScript = [{ type: "insert", tokens: [""] }];
-    expectSnapError(() => validateEdit(base, script), "insert is empty");
+    expectSnapError(validateEdit(base, script), "insert is empty");
   });
 });
 
@@ -274,12 +250,12 @@ void describe("applyEdit — propagates validateEdit errors", () => {
   void test("applyEdit throws on over-consumption", () => {
     const base = tok("a\n");
     const script: DiffScript = [{ type: "retain", count: 5 }];
-    expectSnapError(() => applyEdit(base, script), "consumes beyond old content");
+    expectSnapError(applyEdit(base, script), "consumes beyond old content");
   });
 
   void test("applyEdit throws on under-consumption", () => {
     const base = tok("a\nb\n");
     const script: DiffScript = [{ type: "retain", count: 1 }];
-    expectSnapError(() => applyEdit(base, script), "does not consume old content");
+    expectSnapError(applyEdit(base, script), "does not consume old content");
   });
 });

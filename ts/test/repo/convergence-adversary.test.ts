@@ -11,6 +11,7 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { replay } from "../../src/repo/replay.js";
+import { assertOk } from "../helpers/result.js";
 import type { Repository, Patch } from "../../src/repo/model.js";
 import { emptyTree, treeFromEntries } from "../../src/core/tree.js";
 
@@ -128,7 +129,7 @@ void describe("ADV-D: test-18 three-way permutation convergence (all 6 orderings
     const results: Array<{ content: string; warnings: string }> = [];
     for (const patchOrder of perms) {
       const repo = makeRepo(frontier, patchOrder);
-      const { tree, warnings } = replay(repo);
+      const { tree, warnings } = assertOk(replay(repo));
       const content = tree.get("story.txt")?.toString("utf8") ?? "(absent)";
       const warnStr = JSON.stringify(warnings);
       results.push({ content, warnings: warnStr });
@@ -151,7 +152,7 @@ void describe("ADV-D: test-18 three-way permutation convergence (all 6 orderings
 
   void test("three-way convergence produces B\\nA\\nend\\n (YAML acceptance value)", () => {
     const repo = makeRepo(frontier, allPatches);
-    const { tree, warnings } = replay(repo);
+    const { tree, warnings } = assertOk(replay(repo));
     const content = tree.get("story.txt")?.toString("utf8");
     assert.equal(
       content,
@@ -197,7 +198,7 @@ void describe("ADV-D: SPEC §6.4 rule 1 — C==T for binary put, no warning", ()
       ],
       [alice, bob, seed],
     );
-    const { tree, warnings } = replay(repo);
+    const { tree, warnings } = assertOk(replay(repo));
     const got = tree.get("data.bin");
     assert.ok(got !== undefined, "data.bin should exist");
     assert.deepEqual(got, Buffer.from([0xbe, 0xef]), "data.bin should have the agreed content");
@@ -239,7 +240,7 @@ void describe("ADV-D: SPEC §6.4 rule 1 — C==T for binary put, no warning", ()
       ],
       [alice, bob],
     );
-    const { tree, warnings } = replay(repo);
+    const { tree, warnings } = assertOk(replay(repo));
     assert.equal(tree.get("readme.txt")?.toString("utf8"), sharedContent);
     assert.deepEqual(
       warnings,
@@ -293,7 +294,7 @@ void describe("ADV-D: SPEC §6.4 rule 3 — B present, C absent (concurrent dele
       ],
       [alice, bob, seed],
     );
-    const { tree, warnings } = replay(repo);
+    const { tree, warnings } = assertOk(replay(repo));
     // Concurrent delete (bob) wins over incoming text edit (alice)
     assert.equal(
       tree.has("file.txt"),
@@ -342,7 +343,7 @@ void describe("ADV-D: SPEC §6.4 rule 3 — B present, C absent (concurrent dele
       ],
       [alice, bob, seed],
     );
-    const { tree, warnings } = replay(repo);
+    const { tree, warnings } = assertOk(replay(repo));
     // SPEC §6.4 rule 3 fires: B present, C absent → delete-wins
     // NOT rule 5 (later-put-wins) which would require B absent or special
     assert.equal(
@@ -419,7 +420,7 @@ void describe("ADV-D: single patch triggers delete-wins + put-wins on different 
       ],
       [alice, bob, seed],
     );
-    const { tree, warnings } = replay(repo);
+    const { tree, warnings } = assertOk(replay(repo));
 
     // del.txt: delete-wins (concurrent delete by bob wins)
     assert.equal(
@@ -486,7 +487,7 @@ void describe("ADV-D: three-level namespace collision (a vs a/b/c)", () => {
       ],
       [alice, bob],
     );
-    const { tree, warnings } = replay(repo);
+    const { tree, warnings } = assertOk(replay(repo));
     // alice's a/b/c should win, bob's a should be removed
     assert.equal(
       tree.has("a"),
@@ -528,7 +529,7 @@ void describe("ADV-D: three-level namespace collision (a vs a/b/c)", () => {
       ],
       [alice, bob],
     );
-    const { tree, warnings } = replay(repo);
+    const { tree, warnings } = assertOk(replay(repo));
     assert.equal(
       tree.has("a/b/c"),
       false,
@@ -610,7 +611,7 @@ void describe("ADV-D: warning sort order — by path then reason", () => {
       ],
       [alice, bob, seed],
     );
-    const { warnings } = replay(repo);
+    const { warnings } = assertOk(replay(repo));
     const paths = warnings.map((w) => w.path);
     // Verify sorted by path
     const expected = ["a.txt", "m.txt", "z.txt"];
@@ -658,7 +659,7 @@ void describe("ADV-D: warning sort order — by path then reason", () => {
       ],
       [p1, p2, p3],
     );
-    const { warnings } = replay(repo);
+    const { warnings } = assertOk(replay(repo));
     const fileTxtWarnings = warnings.filter((w) => w.path === "file.txt");
     assert.equal(
       fileTxtWarnings.length,
@@ -776,7 +777,7 @@ void describe("ADV-D: namespace-wins duplicate warning collapse", () => {
       ],
       [alice, bob],
     );
-    const { tree, warnings } = replay(repo);
+    const { tree, warnings } = assertOk(replay(repo));
 
     // alice's "a" must be present, bob's "a/x" and "a/y" must be absent
     assert.equal(tree.get("a")?.toString("utf8"), "parent\n");
@@ -823,7 +824,7 @@ void describe("ADV-D: namespace-wins duplicate warning collapse", () => {
       ],
       [alice, bob],
     );
-    const { tree, warnings } = replay(repo);
+    const { tree, warnings } = assertOk(replay(repo));
 
     assert.equal(tree.has("a"), false, "bob's 'a' must be removed");
     assert.equal(tree.get("a/x")?.toString("utf8"), "x\n", "alice's 'a/x' must be installed");
@@ -870,7 +871,7 @@ void describe("ADV-D: SPEC §6.4 rule 4 — later-create-wins installs T not C",
       ],
       [alice, bob],
     );
-    const { tree, warnings } = replay(repo);
+    const { tree, warnings } = assertOk(replay(repo));
     const content = tree.get("new.txt")?.toString("utf8");
     assert.equal(
       content,
@@ -905,8 +906,8 @@ void describe("ADV-D: SPEC §6.4 rule 4 — later-create-wins installs T not C",
     const repo1 = makeRepo(frontier, [alice, bob]);
     const repo2 = makeRepo(frontier, [bob, alice]);
 
-    const { tree: t1 } = replay(repo1);
-    const { tree: t2 } = replay(repo2);
+    const { tree: t1 } = assertOk(replay(repo1));
+    const { tree: t2 } = assertOk(replay(repo2));
 
     // Both must produce the same result (alice is later, alice wins)
     const r1 = t1.get("f.bin");
@@ -1020,7 +1021,7 @@ void describe("ADV-D: multi-contributor mixed-type convergence", () => {
       ],
       [a, b, c, seed],
     );
-    const { tree, warnings } = replay(repo);
+    const { tree, warnings } = assertOk(replay(repo));
 
     // shared.txt: OT merge of two inserts after L1
     assert.equal(
@@ -1073,7 +1074,7 @@ void describe("ADV-D: multi-contributor mixed-type convergence", () => {
         ],
         patchOrder,
       );
-      const { tree: t2 } = replay(r);
+      const { tree: t2 } = assertOk(replay(r));
       assert.equal(
         t2.get("shared.txt")?.toString("utf8"),
         "L1\nB\nA\nL2\n",

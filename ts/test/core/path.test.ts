@@ -7,18 +7,9 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { validatePath, comparePaths, isPrefix } from "../../src/core/path.js";
-import { SnapError } from "../../src/errors.js";
+import { assertOk, assertErr, expectErr } from "../helpers/result.js";
 
-function throwsSnapError(fn: () => void): void {
-  let threw = false;
-  try {
-    fn();
-  } catch (e) {
-    threw = true;
-    assert.ok(e instanceof SnapError, `expected SnapError, got ${String(e)}`);
-  }
-  assert.ok(threw, "expected function to throw SnapError");
-}
+const throwsSnapError = assertErr;
 
 // ---------------------------------------------------------------------------
 // validatePath — valid paths
@@ -26,35 +17,35 @@ function throwsSnapError(fn: () => void): void {
 
 void describe("validatePath — valid paths", () => {
   void test("simple filename", () => {
-    assert.doesNotThrow(() => validatePath("hello.txt"));
+    assertOk(validatePath("hello.txt"));
   });
 
   void test("nested path", () => {
-    assert.doesNotThrow(() => validatePath("src/main.ts"));
+    assertOk(validatePath("src/main.ts"));
   });
 
   void test("deeply nested", () => {
-    assert.doesNotThrow(() => validatePath("a/b/c/d.txt"));
+    assertOk(validatePath("a/b/c/d.txt"));
   });
 
   void test("unicode filename (non-ASCII chars)", () => {
-    assert.doesNotThrow(() => validatePath("docs/résumé.pdf"));
+    assertOk(validatePath("docs/résumé.pdf"));
   });
 
   void test("file at root with emoji", () => {
-    assert.doesNotThrow(() => validatePath("😀.txt"));
+    assertOk(validatePath("😀.txt"));
   });
 
   void test("dotfile (not .snap)", () => {
-    assert.doesNotThrow(() => validatePath(".gitignore"));
+    assertOk(validatePath(".gitignore"));
   });
 
   void test("hidden dir / file", () => {
-    assert.doesNotThrow(() => validatePath(".config/settings.json"));
+    assertOk(validatePath(".config/settings.json"));
   });
 
   void test("path with dots in filename (not . or ..)", () => {
-    assert.doesNotThrow(() => validatePath("some.lib.ts"));
+    assertOk(validatePath("some.lib.ts"));
   });
 });
 
@@ -64,67 +55,67 @@ void describe("validatePath — valid paths", () => {
 
 void describe("validatePath — invalid paths", () => {
   void test("empty string", () => {
-    throwsSnapError(() => validatePath(""));
+    throwsSnapError(validatePath(""));
   });
 
   void test("leading slash", () => {
-    throwsSnapError(() => validatePath("/absolute/path"));
+    throwsSnapError(validatePath("/absolute/path"));
   });
 
   void test("trailing slash", () => {
-    throwsSnapError(() => validatePath("a/b/"));
+    throwsSnapError(validatePath("a/b/"));
   });
 
   void test("double slash (empty component)", () => {
-    throwsSnapError(() => validatePath("a//b"));
+    throwsSnapError(validatePath("a//b"));
   });
 
   void test("dot component in middle", () => {
-    throwsSnapError(() => validatePath("a/./b"));
+    throwsSnapError(validatePath("a/./b"));
   });
 
   void test("dot-dot component in middle", () => {
-    throwsSnapError(() => validatePath("a/../b"));
+    throwsSnapError(validatePath("a/../b"));
   });
 
   void test("solo dot component", () => {
-    throwsSnapError(() => validatePath("."));
+    throwsSnapError(validatePath("."));
   });
 
   void test("solo dot-dot component", () => {
-    throwsSnapError(() => validatePath(".."));
+    throwsSnapError(validatePath(".."));
   });
 
   void test("leading dot-dot", () => {
-    throwsSnapError(() => validatePath("../foo"));
+    throwsSnapError(validatePath("../foo"));
   });
 
   void test("first segment is .snap", () => {
-    throwsSnapError(() => validatePath(".snap/config.json"));
+    throwsSnapError(validatePath(".snap/config.json"));
   });
 
   void test("just .snap", () => {
-    throwsSnapError(() => validatePath(".snap"));
+    throwsSnapError(validatePath(".snap"));
   });
 
   void test("null byte in path", () => {
-    throwsSnapError(() => validatePath("a\x00b"));
+    throwsSnapError(validatePath("a\x00b"));
   });
 
   void test("control character 0x01 in path", () => {
-    throwsSnapError(() => validatePath("a\x01b"));
+    throwsSnapError(validatePath("a\x01b"));
   });
 
   void test("control character 0x1F in path", () => {
-    throwsSnapError(() => validatePath("a\x1fb"));
+    throwsSnapError(validatePath("a\x1fb"));
   });
 
   void test("backslash in path", () => {
-    throwsSnapError(() => validatePath("a\\b"));
+    throwsSnapError(validatePath("a\\b"));
   });
 
   void test("single slash", () => {
-    throwsSnapError(() => validatePath("/"));
+    throwsSnapError(validatePath("/"));
   });
 });
 
@@ -133,32 +124,13 @@ void describe("validatePath — invalid paths", () => {
 // ---------------------------------------------------------------------------
 
 void describe("validatePath — error type", () => {
-  void test("throws SnapError with 'path is invalid' substring", () => {
-    let err: unknown;
-    try {
-      validatePath(".snap/x");
-    } catch (e) {
-      err = e;
-    }
-    assert.ok(err instanceof SnapError);
-    assert.ok(
-      (err as SnapError).message.includes("path is invalid"),
-      `message was: ${(err as SnapError).message}`,
-    );
+  void test("returns SnapError with 'path is invalid' substring", () => {
+    expectErr(validatePath(".snap/x"), "path is invalid");
   });
 
   void test("error message does not say 'invalid path' (wrong word order)", () => {
-    let err: unknown;
-    try {
-      validatePath("../foo");
-    } catch (e) {
-      err = e;
-    }
-    assert.ok(err instanceof SnapError);
-    assert.ok(
-      !(err as SnapError).message.includes("invalid path"),
-      `message was: ${(err as SnapError).message}`,
-    );
+    const error = assertErr(validatePath("../foo"));
+    assert.ok(!error.message.includes("invalid path"), `message was: ${error.message}`);
   });
 });
 

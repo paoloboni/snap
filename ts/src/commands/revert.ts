@@ -12,6 +12,8 @@ import {
   errTargetTreeAlreadyCurrent,
   errUnsupportedEntry,
 } from "../errors.js";
+import type { SnapResult } from "../errors.js";
+import { ok, err } from "../result.js";
 import { replay } from "../repo/replay.js";
 import { parseVersionString, formatVersionString } from "../core/version.js";
 import { scanWorktree } from "../fsys/worktree.js";
@@ -46,7 +48,7 @@ function isVersionKnown(version: VersionVector, repo: Repository): boolean {
 /**
  * Materialize the tree at a given version by replaying selected patches.
  */
-function materializeVersion(version: VersionVector, repo: Repository): Tree {
+function materializeVersion(version: VersionVector, repo: Repository): SnapResult<Tree> {
   // Create a sub-repository containing only the patches selected by version
   const selectedPatches = repo.patches.filter((p) => p.revision <= (version.get(p.author) ?? 0));
 
@@ -56,8 +58,9 @@ function materializeVersion(version: VersionVector, repo: Repository): Tree {
     patches: selectedPatches,
   };
 
-  const { tree } = replay(subRepo);
-  return tree;
+  const replayed = replay(subRepo);
+  if (!replayed.ok) return err(replayed.error);
+  return ok(replayed.value.tree);
 }
 
 /**
@@ -98,26 +101,34 @@ function makeChange(
  * 7. Read config → check contributor.id → errContributorIdRequired (priority 7)
  * 8. Execute
  */
-export async function run(versionStr: string, cwd: string): Promise<number> {
+export async function run(versionStr: string, cwd: string): Promise<SnapResult<number>> {
   // Step 1: Find repository
   const repoDir = findRepository(cwd);
   if (repoDir === null) {
-    throw errNotARepository();
+    return err(errNotARepository());
   }
 
   // Step 2: Read repository
-  const repo = await readRepository(repoDir);
+  const repoResult = await readRepository(repoDir);
+  if (!repoResult.ok) return err(repoResult.error);
+  const repo = repoResult.value;
 
   // Step 3: Scan working tree, check for unsupported entries (DEC-015 priority 3)
-  const entries = await scanWorktree(repoDir);
+  const scanned = await scanWorktree(repoDir);
+  if (!scanned.ok) return err(scanned.error);
+  const entries = scanned.value;
+
   for (const entry of entries) {
     if (entry.type === "unsupported") {
-      throw errUnsupportedEntry(entry.path);
+      return err(errUnsupportedEntry(entry.path));
     }
   }
 
   // Step 4: Check dirty tree (DEC-015 priority 4 — before version validation)
-  const { tree: currentTree } = replay(repo);
+  const replayed = replay(repo);
+  if (!replayed.ok) return err(replayed.error);
+  const currentTree = replayed.value.tree;
+
   const worktreeMap = new Map<string, Buffer>();
   for (const entry of entries) {
     if (entry.type === "tracked") {
@@ -127,35 +138,37 @@ export async function run(versionStr: string, cwd: string): Promise<number> {
 
   const isDirty = checkDirty(currentTree, worktreeMap);
   if (isDirty) {
-    throw errWorkingTreeDirty();
+    return err(errWorkingTreeDirty());
   }
 
   // Step 5: Parse version string (syntax check — DEC-015 priority 5)
-  let targetVersion: VersionVector;
-  try {
-    targetVersion = parseVersionString(versionStr);
-  } catch {
-    throw errInvalidVersion(versionStr);
+  const parsed = parseVersionString(versionStr);
+  if (!parsed.ok) {
+    return err(errInvalidVersion(versionStr));
   }
+  const targetVersion = parsed.value;
 
   // Step 6: Check version is known (DEC-015 priority 6)
   if (!isVersionKnown(targetVersion, repo)) {
-    throw errUnknownVersion(versionStr);
+    return err(errUnknownVersion(versionStr));
   }
 
   // Step 7: Read config and check contributor ID (DEC-015 priority 7)
   const config = await readConfig(repoDir);
-  if (config.contributorId === undefined) {
-    throw errContributorIdRequired();
+  if (!config.ok) return err(config.error);
+  if (config.value.contributorId === undefined) {
+    return err(errContributorIdRequired());
   }
-  const authorId = config.contributorId;
+  const authorId = config.value.contributorId;
 
   // Step 8: Materialize target tree
-  const targetTree = materializeVersion(targetVersion, repo);
+  const target = materializeVersion(targetVersion, repo);
+  if (!target.ok) return err(target.error);
+  const targetTree = target.value;
 
   // Check if current tree == target tree
   if (treesEqual(currentTree, targetTree)) {
-    throw errTargetTreeAlreadyCurrent();
+    return err(errTargetTreeAlreadyCurrent());
   }
 
   // Step 9: Build changes from current tree to target tree
@@ -207,10 +220,12 @@ export async function run(versionStr: string, cwd: string): Promise<number> {
   };
 
   // Step 11: Materialize target tree (update working files first per SPEC §10)
-  await materialize(repoDir, targetTree);
+  const installed = await materialize(repoDir, targetTree);
+  if (!installed.ok) return err(installed.error);
 
   // Step 12: Write repository (after working files are updated)
-  await writeRepository(repoDir, newRepo);
+  const written = await writeRepository(repoDir, newRepo);
+  if (!written.ok) return err(written.error);
 
   // Print new version
   const newVersionStr = formatVersionString(newFrontier);
@@ -221,7 +236,7 @@ export async function run(versionStr: string, cwd: string): Promise<number> {
     process.stdout.write(newVersionStr + "\n");
   }
 
-  return 0;
+  return ok(0);
 }
 
 function checkDirty(currentTree: Tree, worktreeMap: Map<string, Buffer>): boolean {

@@ -14,6 +14,8 @@ import {
   errUnsupportedEntry,
   errPatchCollision,
 } from "../errors.js";
+import type { SnapResult } from "../errors.js";
+import { ok, err, attemptAsync } from "../result.js";
 import { replay } from "../repo/replay.js";
 import { scanWorktree } from "../fsys/worktree.js";
 import { parseVersionString } from "../core/version.js";
@@ -42,21 +44,24 @@ function isVersionKnown(version: VersionVector, repo: Repository): boolean {
   return true;
 }
 
-function materializeVersion(version: VersionVector, repo: Repository): Tree {
+function materializeVersion(version: VersionVector, repo: Repository): SnapResult<Tree> {
   const selectedPatches = repo.patches.filter((p) => p.revision <= (version.get(p.author) ?? 0));
   const subRepo: Repository = { format: 1, frontier: version, patches: selectedPatches };
-  return replay(subRepo).tree;
+  const replayed = replay(subRepo);
+  if (!replayed.ok) return err(replayed.error);
+  return ok(replayed.value.tree);
 }
 
-function checkCrossRepoDots(local: Repository, remote: Repository): void {
+function checkCrossRepoDots(local: Repository, remote: Repository): SnapResult<void> {
   const localMap = new Map<string, Patch>();
   for (const p of local.patches) localMap.set(`${p.author}@${p.revision}`, p);
   for (const rp of remote.patches) {
     const lp = localMap.get(`${rp.author}@${rp.revision}`);
     if (lp !== undefined && !patchesStructurallyEqual(lp, rp)) {
-      throw errPatchCollision(rp.author, rp.revision);
+      return err(errPatchCollision(rp.author, rp.revision));
     }
   }
+  return ok(undefined);
 }
 
 function patchesStructurallyEqual(a: Patch, b: Patch): boolean {
@@ -94,19 +99,23 @@ function vectEqual(a: ReadonlyMap<string, number>, b: ReadonlyMap<string, number
   return true;
 }
 
-async function loadRemoteRepo(url: string, cwd: string): Promise<Repository> {
+async function loadRemoteRepo(url: string, cwd: string): Promise<SnapResult<Repository>> {
   if (url.startsWith("http://") || url.startsWith("https://")) {
     return fetchRemote(url);
   }
   const absPath = nodePath.resolve(cwd, url);
   const repoJsonPath = nodePath.join(absPath, ".snap", "repository.json");
-  let text: string;
-  try {
-    text = await fs.readFile(repoJsonPath, "utf8");
-  } catch {
-    throw errNotARepository();
-  }
-  return validateRepository(parseJSON(text));
+
+  const text = await attemptAsync(
+    () => fs.readFile(repoJsonPath, "utf8"),
+    () => errNotARepository(),
+  );
+  if (!text.ok) return err(text.error);
+
+  const raw = parseJSON(text.value);
+  if (!raw.ok) return err(raw.error);
+
+  return validateRepository(raw.value);
 }
 
 // ---------------------------------------------------------------------------
@@ -280,18 +289,17 @@ export async function run(
   newSpec: string | undefined,
   repoUrl: string | undefined,
   cwd: string,
-): Promise<number> {
+): Promise<SnapResult<number>> {
   if (oldSpec === undefined) {
     return runWorkingTreeDiff(cwd);
   }
 
   // Parse old version (syntax check)
-  let oldVersion: VersionVector;
-  try {
-    oldVersion = parseVersionString(oldSpec);
-  } catch {
-    throw errInvalidVersion(oldSpec);
+  const parsedOld = parseVersionString(oldSpec);
+  if (!parsedOld.ok) {
+    return err(errInvalidVersion(oldSpec));
   }
+  const oldVersion = parsedOld.value;
 
   if (newSpec === undefined) {
     return runVersionVsWorktreeDiff(oldVersion, oldSpec, cwd);
@@ -312,16 +320,23 @@ function writeDiff(plain: string): void {
   }
 }
 
-async function runWorkingTreeDiff(cwd: string): Promise<number> {
+async function runWorkingTreeDiff(cwd: string): Promise<SnapResult<number>> {
   const repoDir = findRepository(cwd);
-  if (repoDir === null) throw errNotARepository();
+  if (repoDir === null) return err(errNotARepository());
 
-  const repo = await readRepository(repoDir);
-  const { tree: currentTree } = replay(repo);
+  const repoResult = await readRepository(repoDir);
+  if (!repoResult.ok) return err(repoResult.error);
 
-  const entries = await scanWorktree(repoDir);
+  const replayed = replay(repoResult.value);
+  if (!replayed.ok) return err(replayed.error);
+  const currentTree = replayed.value.tree;
+
+  const scanned = await scanWorktree(repoDir);
+  if (!scanned.ok) return err(scanned.error);
+  const entries = scanned.value;
+
   for (const entry of entries) {
-    if (entry.type === "unsupported") throw errUnsupportedEntry(entry.path);
+    if (entry.type === "unsupported") return err(errUnsupportedEntry(entry.path));
   }
 
   const worktreeMap = new Map<string, Buffer>();
@@ -337,25 +352,33 @@ async function runWorkingTreeDiff(cwd: string): Promise<number> {
   );
 
   writeDiff(out);
-  return 0;
+  return ok(0);
 }
 
 async function runVersionVsWorktreeDiff(
   oldVersion: VersionVector,
   oldSpec: string,
   cwd: string,
-): Promise<number> {
+): Promise<SnapResult<number>> {
   const repoDir = findRepository(cwd);
-  if (repoDir === null) throw errNotARepository();
+  if (repoDir === null) return err(errNotARepository());
 
-  const repo = await readRepository(repoDir);
+  const repoResult = await readRepository(repoDir);
+  if (!repoResult.ok) return err(repoResult.error);
+  const repo = repoResult.value;
 
-  if (!isVersionKnown(oldVersion, repo)) throw errUnknownVersion(oldSpec);
-  const oldTree = materializeVersion(oldVersion, repo);
+  if (!isVersionKnown(oldVersion, repo)) return err(errUnknownVersion(oldSpec));
 
-  const entries = await scanWorktree(repoDir);
+  const oldTreeResult = materializeVersion(oldVersion, repo);
+  if (!oldTreeResult.ok) return err(oldTreeResult.error);
+  const oldTree = oldTreeResult.value;
+
+  const scanned = await scanWorktree(repoDir);
+  if (!scanned.ok) return err(scanned.error);
+  const entries = scanned.value;
+
   for (const entry of entries) {
-    if (entry.type === "unsupported") throw errUnsupportedEntry(entry.path);
+    if (entry.type === "unsupported") return err(errUnsupportedEntry(entry.path));
   }
 
   const worktreeMap = new Map<string, Buffer>();
@@ -371,7 +394,7 @@ async function runVersionVsWorktreeDiff(
   );
 
   writeDiff(out);
-  return 0;
+  return ok(0);
 }
 
 async function runTwoVersionDiff(
@@ -380,35 +403,50 @@ async function runTwoVersionDiff(
   newSpec: string,
   repoUrl: string | undefined,
   cwd: string,
-): Promise<number> {
+): Promise<SnapResult<number>> {
   const repoDir = findRepository(cwd);
-  if (repoDir === null) throw errNotARepository();
+  if (repoDir === null) return err(errNotARepository());
 
-  const localRepo = await readRepository(repoDir);
+  const localRepoResult = await readRepository(repoDir);
+  if (!localRepoResult.ok) return err(localRepoResult.error);
+  const localRepo = localRepoResult.value;
 
   // DEC-015: fully validate old operand (syntax already checked by caller; now check known)
   // before parsing or checking new operand.
-  if (!isVersionKnown(oldVersion, localRepo)) throw errUnknownVersion(oldSpec);
-  const oldTree = materializeVersion(oldVersion, localRepo);
+  if (!isVersionKnown(oldVersion, localRepo)) return err(errUnknownVersion(oldSpec));
+
+  const oldTreeResult = materializeVersion(oldVersion, localRepo);
+  if (!oldTreeResult.ok) return err(oldTreeResult.error);
+  const oldTree = oldTreeResult.value;
 
   // Now parse new version (syntax check)
-  let newVersion: VersionVector;
-  try {
-    newVersion = parseVersionString(newSpec);
-  } catch {
-    throw errInvalidVersion(newSpec);
+  const parsedNew = parseVersionString(newSpec);
+  if (!parsedNew.ok) {
+    return err(errInvalidVersion(newSpec));
   }
+  const newVersion = parsedNew.value;
 
   let newTree: Tree;
 
   if (repoUrl !== undefined) {
-    const remoteRepo = await loadRemoteRepo(repoUrl, cwd);
-    checkCrossRepoDots(localRepo, remoteRepo);
-    if (!isVersionKnown(newVersion, remoteRepo)) throw errUnknownVersion(newSpec);
-    newTree = materializeVersion(newVersion, remoteRepo);
+    const remoteRepoResult = await loadRemoteRepo(repoUrl, cwd);
+    if (!remoteRepoResult.ok) return err(remoteRepoResult.error);
+    const remoteRepo = remoteRepoResult.value;
+
+    const dotsCheck = checkCrossRepoDots(localRepo, remoteRepo);
+    if (!dotsCheck.ok) return err(dotsCheck.error);
+
+    if (!isVersionKnown(newVersion, remoteRepo)) return err(errUnknownVersion(newSpec));
+
+    const newTreeResult = materializeVersion(newVersion, remoteRepo);
+    if (!newTreeResult.ok) return err(newTreeResult.error);
+    newTree = newTreeResult.value;
   } else {
-    if (!isVersionKnown(newVersion, localRepo)) throw errUnknownVersion(newSpec);
-    newTree = materializeVersion(newVersion, localRepo);
+    if (!isVersionKnown(newVersion, localRepo)) return err(errUnknownVersion(newSpec));
+
+    const newTreeResult = materializeVersion(newVersion, localRepo);
+    if (!newTreeResult.ok) return err(newTreeResult.error);
+    newTree = newTreeResult.value;
   }
 
   const paths = sortedUnionPaths(oldTree.paths(), newTree.paths());
@@ -419,5 +457,5 @@ async function runTwoVersionDiff(
   );
 
   writeDiff(out);
-  return 0;
+  return ok(0);
 }

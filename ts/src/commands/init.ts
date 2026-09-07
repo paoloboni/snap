@@ -7,8 +7,10 @@ import { findRepository } from "../repo/store.js";
 import {
   errRepositoryAlreadyExists,
   errCannotInitializeInsideRepository,
-  SnapError,
+  errInternalError,
 } from "../errors.js";
+import type { SnapResult } from "../errors.js";
+import { ok, err, attemptAsync } from "../result.js";
 import { colorMode } from "../present/mode.js";
 import { S } from "../present/sgr.js";
 import { formatVersionString } from "../core/version.js";
@@ -22,12 +24,13 @@ const EMPTY_REPO_JSON = JSON.stringify({ format: 1, frontier: [], patches: [] },
  * - Fails if .snap/repository.json already exists at the target.
  * - Prints "()\n" in plain mode, colored output in terminal mode.
  */
-export async function run(initPath: string, cwd: string): Promise<number> {
+export async function run(initPath: string, cwd: string): Promise<SnapResult<number>> {
   // Resolve target path against cwd
   const targetDir = nodePath.resolve(cwd, initPath);
 
   // Create the target directory recursively if needed
-  await fs.mkdir(targetDir, { recursive: true });
+  const made = await attemptAsync(() => fs.mkdir(targetDir, { recursive: true }), errInternalError);
+  if (!made.ok) return err(made.error);
 
   // Check if there's an existing repository containing targetDir
   // SPEC §7.1: "Initializing a target inside an existing repository is an error."
@@ -37,17 +40,13 @@ export async function run(initPath: string, cwd: string): Promise<number> {
   const snapDir = nodePath.join(targetDir, ".snap");
   const repoJsonPath = nodePath.join(snapDir, "repository.json");
 
-  try {
-    const stat = await fs.stat(repoJsonPath);
-    if (stat.isFile()) {
-      throw errRepositoryAlreadyExists();
-    }
-  } catch (e: unknown) {
-    // If it's a SnapError, re-throw
-    if (e instanceof SnapError) {
-      throw e;
-    }
-    // Otherwise: file doesn't exist, continue
+  // A stat failure means the path is absent, which is the normal case.
+  const alreadyARepo = await attemptAsync(
+    async () => (await fs.stat(repoJsonPath)).isFile(),
+    () => false,
+  );
+  if (alreadyARepo.ok && alreadyARepo.value) {
+    return err(errRepositoryAlreadyExists());
   }
 
   // Case 2: targetDir is inside an existing repository (ancestor has .snap/)
@@ -56,12 +55,21 @@ export async function run(initPath: string, cwd: string): Promise<number> {
   const existingRepo = findRepository(targetDir);
   if (existingRepo !== null && existingRepo !== targetDir) {
     // targetDir is inside an existing repository
-    throw errCannotInitializeInsideRepository();
+    return err(errCannotInitializeInsideRepository());
   }
 
   // Create .snap/ directory and repository.json
-  await fs.mkdir(snapDir, { recursive: true });
-  await fs.writeFile(repoJsonPath, EMPTY_REPO_JSON, "utf8");
+  const madeSnapDir = await attemptAsync(
+    () => fs.mkdir(snapDir, { recursive: true }),
+    errInternalError,
+  );
+  if (!madeSnapDir.ok) return err(madeSnapDir.error);
+
+  const written = await attemptAsync(
+    () => fs.writeFile(repoJsonPath, EMPTY_REPO_JSON, "utf8"),
+    errInternalError,
+  );
+  if (!written.ok) return err(written.error);
 
   const emptyVersion = formatVersionString(new Map());
 
@@ -75,5 +83,5 @@ export async function run(initPath: string, cwd: string): Promise<number> {
     process.stdout.write(`${emptyVersion}\n`);
   }
 
-  return 0;
+  return ok(0);
 }

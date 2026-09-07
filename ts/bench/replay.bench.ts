@@ -93,12 +93,21 @@ export function runReplayBenchmark(): { replayMs: number } {
 
   // Warm up with a smaller repo
   const smallRepo = buildReplayRepository(5);
-  replay(smallRepo);
+  const warmup = replay(smallRepo);
+  if (!warmup.ok) {
+    process.stderr.write(`bench: replay warm-up failed: ${warmup.error.message}\n`);
+    return { replayMs: Number.POSITIVE_INFINITY };
+  }
 
   // Benchmark replay
   const start = performance.now();
-  replay(repo);
+  const replayed = replay(repo);
   const replayMs = performance.now() - start;
+
+  if (!replayed.ok) {
+    process.stderr.write(`bench: replay failed: ${replayed.error.message}\n`);
+    return { replayMs: Number.POSITIVE_INFINITY };
+  }
 
   return { replayMs };
 }

@@ -3,6 +3,8 @@
 // DEC-011: canonical serialization is JSON.stringify(v, null, 2) + "\n"
 
 import { errDuplicateJsonKey, errInvalidJson } from "../errors.js";
+import type { SnapResult } from "../errors.js";
+import { ok, err, attempt } from "../result.js";
 import type { Repository, Patch, Change } from "./model.js";
 import type { DiffOp } from "../core/diff.js";
 
@@ -15,22 +17,24 @@ import type { DiffOp } from "../core/diff.js";
  * Uses a state-machine tokenizer to scan raw text for object key tokens
  * and tracks per-depth sets of keys.
  *
- * Throws errDuplicateJsonKey(key) on duplicate, errInvalidJson() on malformed JSON.
+ * Returns errDuplicateJsonKey(key) on duplicate, errInvalidJson() on malformed JSON.
  */
-export function parseJSON(text: string): unknown {
+export function parseJSON(text: string): SnapResult<unknown> {
   // First do the duplicate-key check via a raw scan
-  checkDuplicateKeys(text);
+  const dupCheck = checkDuplicateKeys(text);
+  if (!dupCheck.ok) {
+    return err(dupCheck.error);
+  }
 
   // Then do the actual parse (JSON.parse is fine now that we've validated uniqueness)
-  try {
-    return JSON.parse(text) as unknown;
-  } catch {
-    throw errInvalidJson();
-  }
+  return attempt(
+    () => JSON.parse(text) as unknown,
+    () => errInvalidJson(),
+  );
 }
 
 /**
- * Scan raw JSON text and throw on the first duplicate key found at any depth.
+ * Scan raw JSON text and return an error on the first duplicate key found at any depth.
  * Uses a simple state machine:
  *   - Track nesting depth via a stack of Sets (one Set per object depth).
  *   - When we see `{`, push a new Set.
@@ -38,14 +42,11 @@ export function parseJSON(text: string): unknown {
  *   - When we see a string token followed by `:`, it's an object key — check for duplicates.
  * Strings are parsed fully to handle escaped quotes.
  */
-function checkDuplicateKeys(text: string): void {
+function checkDuplicateKeys(text: string): SnapResult<void> {
   const n = text.length;
   let i = 0;
 
   // Stack of Sets: each Set holds the keys seen at that object depth.
-  // We only push onto this stack when inside an object (not an array).
-  // We also need to track whether each nesting level is an object or array.
-  const kindStack: Array<"object" | "array"> = [];
   const keyStack: Array<Set<string>> = [];
 
   function skipWhitespace(): void {
@@ -58,9 +59,9 @@ function checkDuplicateKeys(text: string): void {
    * Read a JSON string starting at position i (which must be `"`).
    * Returns the decoded string value. Advances i past the closing `"`.
    */
-  function readString(): string {
+  function readString(): SnapResult<string> {
     if (text[i] !== '"') {
-      throw errInvalidJson();
+      return err(errInvalidJson());
     }
     i++; // skip opening "
     let result = "";
@@ -68,11 +69,11 @@ function checkDuplicateKeys(text: string): void {
       const ch = text[i];
       if (ch === '"') {
         i++; // skip closing "
-        return result;
+        return ok(result);
       }
       if (ch === "\\") {
         i++;
-        if (i >= n) throw errInvalidJson();
+        if (i >= n) return err(errInvalidJson());
         const esc = text[i];
         if (esc === '"') {
           result += '"';
@@ -92,13 +93,13 @@ function checkDuplicateKeys(text: string): void {
           result += "\t";
         } else if (esc === "u") {
           // Read 4 hex digits
-          if (i + 4 >= n) throw errInvalidJson();
+          if (i + 4 >= n) return err(errInvalidJson());
           const hex = text.slice(i + 1, i + 5);
-          if (!/^[0-9a-fA-F]{4}$/.test(hex)) throw errInvalidJson();
+          if (!/^[0-9a-fA-F]{4}$/.test(hex)) return err(errInvalidJson());
           result += String.fromCharCode(parseInt(hex, 16));
           i += 4;
         } else {
-          throw errInvalidJson();
+          return err(errInvalidJson());
         }
         i++;
       } else {
@@ -106,143 +107,145 @@ function checkDuplicateKeys(text: string): void {
         i++;
       }
     }
-    throw errInvalidJson(); // unterminated string
+    return err(errInvalidJson()); // unterminated string
   }
 
   /**
-   * Skip over a complete JSON value (without tracking keys — used for values
-   * in non-object contexts and for non-string values). Actually we DO need to
-   * track keys inside nested objects/arrays, so we call scanValue recursively.
+   * Scan over a complete JSON value, recursing into nested objects and arrays
+   * so that keys at every depth are checked.
    */
-  function scanValue(): void {
+  function scanValue(): SnapResult<void> {
     skipWhitespace();
-    if (i >= n) throw errInvalidJson();
+    if (i >= n) return err(errInvalidJson());
     const ch = text[i];
 
     if (ch === "{") {
-      scanObject();
+      return scanObject();
     } else if (ch === "[") {
-      scanArray();
+      return scanArray();
     } else if (ch === '"') {
-      readString(); // discard value
+      const s = readString(); // discard value
+      if (!s.ok) return err(s.error);
+      return ok(undefined);
     } else if (ch === "t") {
       // true
-      if (text.slice(i, i + 4) !== "true") throw errInvalidJson();
+      if (text.slice(i, i + 4) !== "true") return err(errInvalidJson());
       i += 4;
     } else if (ch === "f") {
       // false
-      if (text.slice(i, i + 5) !== "false") throw errInvalidJson();
+      if (text.slice(i, i + 5) !== "false") return err(errInvalidJson());
       i += 5;
     } else if (ch === "n") {
       // null
-      if (text.slice(i, i + 4) !== "null") throw errInvalidJson();
+      if (text.slice(i, i + 4) !== "null") return err(errInvalidJson());
       i += 4;
     } else if (ch === "-" || (ch !== undefined && ch >= "0" && ch <= "9")) {
       // number
       if (ch === "-") i++;
       // integer part
-      if (i >= n) throw errInvalidJson();
+      if (i >= n) return err(errInvalidJson());
       const digitCh = text[i];
       if (digitCh === "0") {
         i++;
       } else if (digitCh !== undefined && digitCh >= "1" && digitCh <= "9") {
         while (i < n && text[i]! >= "0" && text[i]! <= "9") i++;
       } else {
-        throw errInvalidJson();
+        return err(errInvalidJson());
       }
       // optional fraction
       if (i < n && text[i] === ".") {
         i++;
-        if (i >= n || text[i]! < "0" || text[i]! > "9") throw errInvalidJson();
+        if (i >= n || text[i]! < "0" || text[i]! > "9") return err(errInvalidJson());
         while (i < n && text[i]! >= "0" && text[i]! <= "9") i++;
       }
       // optional exponent
       if (i < n && (text[i] === "e" || text[i] === "E")) {
         i++;
         if (i < n && (text[i] === "+" || text[i] === "-")) i++;
-        if (i >= n || text[i]! < "0" || text[i]! > "9") throw errInvalidJson();
+        if (i >= n || text[i]! < "0" || text[i]! > "9") return err(errInvalidJson());
         while (i < n && text[i]! >= "0" && text[i]! <= "9") i++;
       }
     } else {
-      throw errInvalidJson();
+      return err(errInvalidJson());
     }
+
+    return ok(undefined);
   }
 
-  function scanObject(): void {
-    if (text[i] !== "{") throw errInvalidJson();
+  function scanObject(): SnapResult<void> {
+    if (text[i] !== "{") return err(errInvalidJson());
     i++; // skip {
-    kindStack.push("object");
     const keys = new Set<string>();
     keyStack.push(keys);
     skipWhitespace();
     if (i < n && text[i] === "}") {
       i++;
-      kindStack.pop();
       keyStack.pop();
-      return;
+      return ok(undefined);
     }
     // parse key-value pairs
     for (;;) {
       skipWhitespace();
-      if (i >= n || text[i] !== '"') throw errInvalidJson();
+      if (i >= n || text[i] !== '"') return err(errInvalidJson());
       const key = readString();
+      if (!key.ok) return err(key.error);
       // Check for duplicate
-      if (keys.has(key)) {
-        throw errDuplicateJsonKey(key);
+      if (keys.has(key.value)) {
+        return err(errDuplicateJsonKey(key.value));
       }
-      keys.add(key);
+      keys.add(key.value);
       skipWhitespace();
       const colonCh = text[i];
-      if (i >= n || colonCh !== ":") throw errInvalidJson();
+      if (i >= n || colonCh !== ":") return err(errInvalidJson());
       i++; // skip :
-      scanValue();
+      const value = scanValue();
+      if (!value.ok) return err(value.error);
       skipWhitespace();
-      if (i >= n) throw errInvalidJson();
+      if (i >= n) return err(errInvalidJson());
       const afterValCh = text[i];
       if (afterValCh === "}") {
         i++;
-        kindStack.pop();
         keyStack.pop();
-        return;
+        return ok(undefined);
       }
-      if (afterValCh !== ",") throw errInvalidJson();
+      if (afterValCh !== ",") return err(errInvalidJson());
       i++; // skip ,
     }
   }
 
-  function scanArray(): void {
-    if (text[i] !== "[") throw errInvalidJson();
+  function scanArray(): SnapResult<void> {
+    if (text[i] !== "[") return err(errInvalidJson());
     i++; // skip [
-    kindStack.push("array");
     skipWhitespace();
     if (i < n && text[i] === "]") {
       i++;
-      kindStack.pop();
-      return;
+      return ok(undefined);
     }
     for (;;) {
-      scanValue();
+      const value = scanValue();
+      if (!value.ok) return err(value.error);
       skipWhitespace();
-      if (i >= n) throw errInvalidJson();
+      if (i >= n) return err(errInvalidJson());
       const afterArrayCh = text[i];
       if (afterArrayCh === "]") {
         i++;
-        kindStack.pop();
-        return;
+        return ok(undefined);
       }
-      if (afterArrayCh !== ",") throw errInvalidJson();
+      if (afterArrayCh !== ",") return err(errInvalidJson());
       i++; // skip ,
     }
   }
 
   // Top-level scan
-  scanValue();
+  const top = scanValue();
+  if (!top.ok) return err(top.error);
   skipWhitespace();
   if (i < n) {
-    // trailing content — JSON.parse will catch this
-    // but we should also fail here to match behavior
-    throw errInvalidJson();
+    // trailing content — JSON.parse would catch this too, but fail here to match behavior
+    return err(errInvalidJson());
   }
+
+  return ok(undefined);
 }
 
 // ---------------------------------------------------------------------------

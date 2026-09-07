@@ -7,6 +7,9 @@ import type { Dirent } from "node:fs";
 import * as nodePath from "node:path";
 import { comparePaths } from "../core/path.js";
 import type { Tree } from "../core/tree.js";
+import { errInternalError } from "../errors.js";
+import type { SnapResult } from "../errors.js";
+import { ok, err, attemptAsync } from "../result.js";
 
 export type WorktreeEntry =
   { type: "tracked"; path: string; buf: Buffer } | { type: "unsupported"; path: string };
@@ -23,26 +26,27 @@ export type WorktreeStatus =
  * - Symlinks, FIFOs, sockets, devices, etc. → { type: "unsupported", path }
  * - Directories → recurse (empty dirs are not tracked)
  */
-export async function scanWorktree(workDir: string): Promise<WorktreeEntry[]> {
+export async function scanWorktree(workDir: string): Promise<SnapResult<WorktreeEntry[]>> {
   const entries: WorktreeEntry[] = [];
-  await scanDir(workDir, workDir, entries);
+  const scanned = await scanDir(workDir, workDir, entries);
+  if (!scanned.ok) return err(scanned.error);
   entries.sort((a, b) => comparePaths(a.path, b.path));
-  return entries;
+  return ok(entries);
 }
 
 async function scanDir(
   rootDir: string,
   currentDir: string,
   entries: WorktreeEntry[],
-): Promise<void> {
-  let dirents: Dirent[];
-  try {
-    dirents = await fs.readdir(currentDir, { withFileTypes: true, encoding: "utf8" });
-  } catch {
-    return;
-  }
+): Promise<SnapResult<void>> {
+  // An unreadable directory contributes no entries, as before.
+  const dirents = await attemptAsync(
+    (): Promise<Dirent[]> => fs.readdir(currentDir, { withFileTypes: true, encoding: "utf8" }),
+    () => null,
+  );
+  if (!dirents.ok) return ok(undefined);
 
-  for (const dirent of dirents) {
+  for (const dirent of dirents.value) {
     const name = dirent.name;
     const absPath = nodePath.join(currentDir, name);
     const relPath =
@@ -57,15 +61,19 @@ async function scanDir(
 
     if (dirent.isDirectory()) {
       // Recurse into directory; empty dirs are not tracked (no entry added)
-      await scanDir(rootDir, absPath, entries);
+      const sub = await scanDir(rootDir, absPath, entries);
+      if (!sub.ok) return err(sub.error);
     } else if (dirent.isFile()) {
-      const buf = await fs.readFile(absPath);
-      entries.push({ type: "tracked", path: relPath, buf });
+      const buf = await attemptAsync(() => fs.readFile(absPath), errInternalError);
+      if (!buf.ok) return err(buf.error);
+      entries.push({ type: "tracked", path: relPath, buf: buf.value });
     } else {
       // Symlink, FIFO, socket, device, or anything else → unsupported
       entries.push({ type: "unsupported", path: relPath });
     }
   }
+
+  return ok(undefined);
 }
 
 /**
@@ -79,8 +87,10 @@ async function scanDir(
 export async function classifyWorktree(
   workDir: string,
   currentTree: Tree,
-): Promise<WorktreeStatus> {
-  const entries = await scanWorktree(workDir);
+): Promise<SnapResult<WorktreeStatus>> {
+  const scanned = await scanWorktree(workDir);
+  if (!scanned.ok) return err(scanned.error);
+  const entries = scanned.value;
 
   // Check for unsupported entries first (takes priority over dirty)
   const unsupportedPaths = entries
@@ -88,7 +98,7 @@ export async function classifyWorktree(
     .map((e) => e.path);
 
   if (unsupportedPaths.length > 0) {
-    return { type: "unsupported", paths: unsupportedPaths };
+    return ok({ type: "unsupported", paths: unsupportedPaths });
   }
 
   // All entries are tracked files — compare against currentTree
@@ -107,11 +117,11 @@ export async function classifyWorktree(
     const treeBytes = currentTree.get(entry.path);
     if (treeBytes === undefined) {
       // File is added (not in current tree) → dirty
-      return { type: "dirty", entries: trackedEntries };
+      return ok({ type: "dirty", entries: trackedEntries });
     }
     if (!treeBytes.equals(entry.buf)) {
       // File is modified → dirty
-      return { type: "dirty", entries: trackedEntries };
+      return ok({ type: "dirty", entries: trackedEntries });
     }
   }
 
@@ -119,9 +129,9 @@ export async function classifyWorktree(
   for (const treePath of treePaths) {
     if (!worktreePaths.has(treePath)) {
       // File deleted from working tree → dirty
-      return { type: "dirty", entries: trackedEntries };
+      return ok({ type: "dirty", entries: trackedEntries });
     }
   }
 
-  return { type: "clean" };
+  return ok({ type: "clean" });
 }

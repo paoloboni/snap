@@ -17,18 +17,9 @@ import {
   compareVectors,
   type VersionVector,
 } from "../../src/core/version.js";
-import { SnapError } from "../../src/errors.js";
+import { assertOk, assertErr } from "../helpers/result.js";
 
-function throwsSnapError(fn: () => void): void {
-  let threw = false;
-  try {
-    fn();
-  } catch (e) {
-    threw = true;
-    assert.ok(e instanceof SnapError, `expected SnapError, got ${String(e)}`);
-  }
-  assert.ok(threw, "expected function to throw SnapError");
-}
+const throwsSnapError = assertErr;
 
 function makeVector(entries: [string, number][]): VersionVector {
   return new Map(entries);
@@ -40,49 +31,49 @@ function makeVector(entries: [string, number][]): VersionVector {
 
 void describe("parseVersion — valid", () => {
   void test("simple author->revision", () => {
-    const v = parseVersion("alice@example.com->1");
+    const v = assertOk(parseVersion("alice@example.com->1"));
     assert.equal(v.author, "alice@example.com");
     assert.equal(v.revision, 1);
   });
 
   void test("large revision", () => {
-    const v = parseVersion("bob@x->9007199254740991");
+    const v = assertOk(parseVersion("bob@x->9007199254740991"));
     assert.equal(v.revision, 9007199254740991);
   });
 
   void test("revision 1 (minimum valid)", () => {
-    const v = parseVersion("a@b->1");
+    const v = assertOk(parseVersion("a@b->1"));
     assert.equal(v.revision, 1);
   });
 });
 
 void describe("parseVersion — invalid", () => {
   void test("no arrow", () => {
-    throwsSnapError(() => parseVersion("alice@example.com"));
+    throwsSnapError(parseVersion("alice@example.com"));
   });
 
   void test("revision 0 (not positive)", () => {
-    throwsSnapError(() => parseVersion("alice@example.com->0"));
+    throwsSnapError(parseVersion("alice@example.com->0"));
   });
 
   void test("leading zero in revision", () => {
-    throwsSnapError(() => parseVersion("alice@example.com->01"));
+    throwsSnapError(parseVersion("alice@example.com->01"));
   });
 
   void test("negative revision", () => {
-    throwsSnapError(() => parseVersion("alice@example.com->-1"));
+    throwsSnapError(parseVersion("alice@example.com->-1"));
   });
 
   void test("non-numeric revision", () => {
-    throwsSnapError(() => parseVersion("alice@example.com->abc"));
+    throwsSnapError(parseVersion("alice@example.com->abc"));
   });
 
   void test("overflow revision", () => {
-    throwsSnapError(() => parseVersion("alice@example.com->9007199254740992"));
+    throwsSnapError(parseVersion("alice@example.com->9007199254740992"));
   });
 
   void test("invalid contributor ID (no @)", () => {
-    throwsSnapError(() => parseVersion("alice->1"));
+    throwsSnapError(parseVersion("alice->1"));
   });
 });
 
@@ -112,32 +103,32 @@ void describe("formatVersion", () => {
 
 void describe("parseVersionString — valid", () => {
   void test("empty version '()'", () => {
-    const v = parseVersionString("()");
+    const v = assertOk(parseVersionString("()"));
     assert.equal(v.size, 0);
   });
 
   void test("single entry", () => {
-    const v = parseVersionString("(alice@x->1)");
+    const v = assertOk(parseVersionString("(alice@x->1)"));
     assert.equal(v.size, 1);
     assert.equal(v.get("alice@x"), 1);
   });
 
   void test("multiple entries, already sorted", () => {
-    const v = parseVersionString("(alice@x->2,bob@x->3)");
+    const v = assertOk(parseVersionString("(alice@x->2,bob@x->3)"));
     assert.equal(v.size, 2);
     assert.equal(v.get("alice@x"), 2);
     assert.equal(v.get("bob@x"), 3);
   });
 
   void test("spec example: two contributors", () => {
-    const v = parseVersionString("(jdegoes@example.com->2323,vigoo@example.com->239)");
+    const v = assertOk(parseVersionString("(jdegoes@example.com->2323,vigoo@example.com->239)"));
     assert.equal(v.size, 2);
     assert.equal(v.get("jdegoes@example.com"), 2323);
     assert.equal(v.get("vigoo@example.com"), 239);
   });
 
   void test("revision MAX_SAFE_INTEGER", () => {
-    const v = parseVersionString("(a@b->9007199254740991)");
+    const v = assertOk(parseVersionString("(a@b->9007199254740991)"));
     assert.equal(v.get("a@b"), 9007199254740991);
   });
 });
@@ -148,55 +139,55 @@ void describe("parseVersionString — valid", () => {
 
 void describe("parseVersionString — invalid", () => {
   void test("missing outer parens", () => {
-    throwsSnapError(() => parseVersionString("alice@x->1"));
+    throwsSnapError(parseVersionString("alice@x->1"));
   });
 
   void test("leading zero in revision", () => {
-    throwsSnapError(() => parseVersionString("(alice@x->01)"));
+    throwsSnapError(parseVersionString("(alice@x->01)"));
   });
 
   void test("revision 0 (explicit zero)", () => {
-    throwsSnapError(() => parseVersionString("(alice@x->0)"));
+    throwsSnapError(parseVersionString("(alice@x->0)"));
   });
 
   void test("duplicate IDs", () => {
-    throwsSnapError(() => parseVersionString("(alice@x->1,alice@x->2)"));
+    throwsSnapError(parseVersionString("(alice@x->1,alice@x->2)"));
   });
 
   void test("wrong order (non-canonical)", () => {
     // bob@x->3 comes after alice@x->2 in byte order, so (bob,alice) is non-canonical
-    throwsSnapError(() => parseVersionString("(bob@x->3,alice@x->2)"));
+    throwsSnapError(parseVersionString("(bob@x->3,alice@x->2)"));
   });
 
   void test("whitespace in string", () => {
-    throwsSnapError(() => parseVersionString("(alice@x->1, bob@x->2)"));
+    throwsSnapError(parseVersionString("(alice@x->1, bob@x->2)"));
   });
 
   void test("overflow revision", () => {
-    throwsSnapError(() => parseVersionString("(a@b->9007199254740992)"));
+    throwsSnapError(parseVersionString("(a@b->9007199254740992)"));
   });
 
   void test("missing closing paren", () => {
-    throwsSnapError(() => parseVersionString("(alice@x->1"));
+    throwsSnapError(parseVersionString("(alice@x->1"));
   });
 
   void test("missing opening paren", () => {
-    throwsSnapError(() => parseVersionString("alice@x->1)"));
+    throwsSnapError(parseVersionString("alice@x->1)"));
   });
 
   void test("invalid contributor ID in version string", () => {
-    throwsSnapError(() => parseVersionString("(noemail->1)"));
+    throwsSnapError(parseVersionString("(noemail->1)"));
   });
 
   void test("empty entry (trailing comma)", () => {
-    throwsSnapError(() => parseVersionString("(alice@x->1,)"));
+    throwsSnapError(parseVersionString("(alice@x->1,)"));
   });
 
   void test("two entries in non-canonical order", () => {
     // 'z@x->1' sorts before 'alice@x->2' would be wrong — actually:
     // 'alice@x->2' starts with 'a' (0x61), 'z@x->1' starts with 'z' (0x7A)
     // So alice < z in byte order; (z, alice) is non-canonical
-    throwsSnapError(() => parseVersionString("(z@x->1,alice@x->2)"));
+    throwsSnapError(parseVersionString("(z@x->1,alice@x->2)"));
   });
 });
 
@@ -236,11 +227,11 @@ void describe("formatVersionString — canonical output", () => {
 
   void test("round-trip: parse then format returns same string", () => {
     const s = "(alice@x->1,bob@x->2)";
-    assert.equal(formatVersionString(parseVersionString(s)), s);
+    assert.equal(formatVersionString(assertOk(parseVersionString(s))), s);
   });
 
   void test("round-trip empty", () => {
-    assert.equal(formatVersionString(parseVersionString("()")), "()");
+    assert.equal(formatVersionString(assertOk(parseVersionString("()"))), "()");
   });
 });
 
@@ -608,17 +599,17 @@ void describe("snapOrder", () => {
 
 void describe("revision boundary tests", () => {
   void test("revision exactly 9007199254740991 is valid (MAX_SAFE_INTEGER)", () => {
-    const v = parseVersion("a@b->9007199254740991");
+    const v = assertOk(parseVersion("a@b->9007199254740991"));
     assert.equal(v.revision, 9007199254740991);
   });
 
   void test("revision 9007199254740992 is invalid (overflow)", () => {
-    throwsSnapError(() => parseVersion("a@b->9007199254740992"));
+    throwsSnapError(parseVersion("a@b->9007199254740992"));
   });
 
   void test("in version string: MAX_SAFE_INTEGER is valid", () => {
     const s = "(a@b->9007199254740991)";
-    const v = parseVersionString(s);
+    const v = assertOk(parseVersionString(s));
     assert.equal(v.get("a@b"), 9007199254740991);
   });
 });
@@ -629,11 +620,11 @@ void describe("revision boundary tests", () => {
 
 void describe("version string edge cases", () => {
   void test("only whitespace in parens is invalid", () => {
-    throwsSnapError(() => parseVersionString("( )"));
+    throwsSnapError(parseVersionString("( )"));
   });
 
   void test("entry with only arrow is invalid", () => {
-    throwsSnapError(() => parseVersionString("(->1)"));
+    throwsSnapError(parseVersionString("(->1)"));
   });
 
   void test("equal single-entry vectors", () => {

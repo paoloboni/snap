@@ -13,7 +13,7 @@ import type { AddressInfo } from "node:net";
 import { serve } from "../../src/net/server.js";
 import { writeRepository } from "../../src/repo/store.js";
 import type { Repository } from "../../src/repo/model.js";
-import { SnapError } from "../../src/errors.js";
+import { assertOk, assertErr } from "../helpers/result.js";
 import { serializeRepository } from "../../src/repo/json.js";
 
 // ---------------------------------------------------------------------------
@@ -184,7 +184,7 @@ async function startTestServer(repoDir: string): Promise<{
   const { readRepository } = await import("../../src/repo/store.js");
   const { serializeRepository } = await import("../../src/repo/json.js");
 
-  const repo = await readRepository(repoDir);
+  const repo = assertOk(await readRepository(repoDir));
   const body = serializeRepository(repo);
   const bodyBuffer = Buffer.from(body, "utf8");
 
@@ -439,11 +439,8 @@ void describe("HTTP server rejects invalid repository at startup", () => {
       }),
     );
 
-    // serve() should throw a SnapError when readRepository fails
-    await assert.rejects(
-      () => serve(repoDir, 0),
-      (err: unknown) => err instanceof SnapError,
-    );
+    // serve() should return a SnapError when readRepository fails
+    assertErr(await serve(repoDir, 0));
   });
 });
 

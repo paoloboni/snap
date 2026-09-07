@@ -10,6 +10,8 @@ import {
   errWorkingTreeClean,
   errUnsupportedEntry,
 } from "../errors.js";
+import type { SnapResult } from "../errors.js";
+import { ok, err } from "../result.js";
 import { replay } from "../repo/replay.js";
 import { scanWorktree } from "../fsys/worktree.js";
 import { formatVersionString } from "../core/version.js";
@@ -28,22 +30,23 @@ const MAX_MESSAGE_BYTES = 4096;
  * - Must be ≤ 4096 UTF-8 bytes
  * - Must not contain control characters other than TAB and LF
  */
-function validateCommitMessage(msg: string): void {
+function validateCommitMessage(msg: string): SnapResult<void> {
   if (msg.length === 0) {
-    throw errInvalidCommitMessage();
+    return err(errInvalidCommitMessage());
   }
   // Check for forbidden control characters
   for (let i = 0; i < msg.length; i++) {
     const code = msg.charCodeAt(i);
     if ((code < 0x20 && code !== 0x09 && code !== 0x0a) || code === 0x7f) {
-      throw errInvalidCommitMessage();
+      return err(errInvalidCommitMessage());
     }
   }
   // Check byte length
   const byteLen = Buffer.byteLength(msg, "utf8");
   if (byteLen > MAX_MESSAGE_BYTES) {
-    throw errInvalidCommitMessage();
+    return err(errInvalidCommitMessage());
   }
+  return ok(undefined);
 }
 
 /**
@@ -82,37 +85,47 @@ function makeChange(path: string, oldBytes: Buffer | undefined, newBytes: Buffer
  * 7. Check clean tree → errWorkingTreeClean (priority 8)
  * 8. Execute
  */
-export async function run(message: string, cwd: string): Promise<number> {
+export async function run(message: string, cwd: string): Promise<SnapResult<number>> {
   // Step 1: Find repository
   const repoDir = findRepository(cwd);
   if (repoDir === null) {
-    throw errNotARepository();
+    return err(errNotARepository());
   }
 
   // Step 2: Read and validate repository
-  const repo = await readRepository(repoDir);
-  const { tree: currentTree } = replay(repo);
+  const repoResult = await readRepository(repoDir);
+  if (!repoResult.ok) return err(repoResult.error);
+  const repo = repoResult.value;
+
+  const replayed = replay(repo);
+  if (!replayed.ok) return err(replayed.error);
+  const currentTree = replayed.value.tree;
 
   // Step 3: Scan working tree, check for unsupported entries (DEC-015 priority 3)
-  const entries = await scanWorktree(repoDir);
+  const scanned = await scanWorktree(repoDir);
+  if (!scanned.ok) return err(scanned.error);
+  const entries = scanned.value;
+
   for (const entry of entries) {
     if (entry.type === "unsupported") {
-      throw errUnsupportedEntry(entry.path);
+      return err(errUnsupportedEntry(entry.path));
     }
   }
 
-  // Step 4: Read config (throws on malformed/invalid config — e.g. errInvalidContributorId)
+  // Step 4: Read config (fails on malformed/invalid config — e.g. errInvalidContributorId)
   // Done before message validation so config format errors fire at priority 7 (higher than 9).
   const config = await readConfig(repoDir);
+  if (!config.ok) return err(config.error);
 
   // Step 5: Check contributor ID present (DEC-015 priority 7)
-  if (config.contributorId === undefined) {
-    throw errContributorIdRequired();
+  if (config.value.contributorId === undefined) {
+    return err(errContributorIdRequired());
   }
-  const authorId = config.contributorId;
+  const authorId = config.value.contributorId;
 
   // Step 6: Validate message (DEC-015 priority 9 but before clean-tree per PLAN.md §7.5 rule 5)
-  validateCommitMessage(message);
+  const messageCheck = validateCommitMessage(message);
+  if (!messageCheck.ok) return err(messageCheck.error);
 
   // Build working tree map
   const worktreeMap = new Map<string, Buffer>();
@@ -146,7 +159,7 @@ export async function run(message: string, cwd: string): Promise<number> {
   }
 
   if (changes.length === 0) {
-    throw errWorkingTreeClean();
+    return err(errWorkingTreeClean());
   }
 
   // Step 8: Create the new patch
@@ -181,7 +194,8 @@ export async function run(message: string, cwd: string): Promise<number> {
   };
 
   // Step 9: Write repository
-  await writeRepository(repoDir, newRepo);
+  const written = await writeRepository(repoDir, newRepo);
+  if (!written.ok) return err(written.error);
 
   // Print new version
   const versionStr = formatVersionString(newFrontier);
@@ -192,7 +206,7 @@ export async function run(message: string, cwd: string): Promise<number> {
     process.stdout.write(versionStr + "\n");
   }
 
-  return 0;
+  return ok(0);
 }
 
 // Re-export for use in other commands

@@ -20,17 +20,11 @@ import {
 } from "../../src/core/version.js";
 import { validateContributorId } from "../../src/core/contributor.js";
 import { validatePath, isPrefix } from "../../src/core/path.js";
-import { SnapError } from "../../src/errors.js";
+import type { SnapResult } from "../../src/errors.js";
+import { assertOk, assertErr } from "../helpers/result.js";
 
-function throwsSnapError(fn: () => void, label = ""): void {
-  let threw = false;
-  try {
-    fn();
-  } catch (e) {
-    threw = true;
-    assert.ok(e instanceof SnapError, `expected SnapError, got ${String(e)} [${label}]`);
-  }
-  assert.ok(threw, `expected function to throw SnapError [${label}]`);
+function throwsSnapError<T>(result: SnapResult<T>, label = ""): void {
+  assertErr(result, label);
 }
 
 function makeVector(entries: [string, number][]): VersionVector {
@@ -49,19 +43,19 @@ void describe("ADV-A-001 path: DEL (0x7F) must be rejected (SPEC §2:67-71)", ()
   void test("DEL in middle of path must be rejected", () => {
     // 0x7F is ASCII DEL — a control character. SPEC §2 forbids it.
     // Current validatePath only checks code < 0x20, so 0x7F passes through.
-    throwsSnapError(() => validatePath("a\x7fb"), "DEL in middle");
+    throwsSnapError(validatePath("a\x7fb"), "DEL in middle");
   });
 
   void test("DEL at start of path must be rejected", () => {
-    throwsSnapError(() => validatePath("\x7fabc"), "DEL at start");
+    throwsSnapError(validatePath("\x7fabc"), "DEL at start");
   });
 
   void test("DEL at end of path must be rejected", () => {
-    throwsSnapError(() => validatePath("abc\x7f"), "DEL at end");
+    throwsSnapError(validatePath("abc\x7f"), "DEL at end");
   });
 
   void test("standalone DEL must be rejected", () => {
-    throwsSnapError(() => validatePath("\x7f"), "standalone DEL");
+    throwsSnapError(validatePath("\x7f"), "standalone DEL");
   });
 });
 
@@ -102,20 +96,20 @@ void describe("ADV-A-002 path: isPrefix same-path identity (SPEC §2:73-75)", ()
 
 void describe("ADV-A-003 path: .snap boundary (SPEC §2:67-71)", () => {
   void test('".snap" as full path must be rejected', () => {
-    throwsSnapError(() => validatePath(".snap"), ".snap as full path");
+    throwsSnapError(validatePath(".snap"), ".snap as full path");
   });
 
   void test('".snap/foo" must be rejected (first segment is .snap)', () => {
-    throwsSnapError(() => validatePath(".snap/foo"), ".snap prefix");
+    throwsSnapError(validatePath(".snap/foo"), ".snap prefix");
   });
 
   void test('".snapshots/foo" must be accepted (first segment is .snapshots, not .snap)', () => {
     // ".snapshots" !== ".snap", so this must be valid
-    assert.doesNotThrow(() => validatePath(".snapshots/foo"));
+    assertOk(validatePath(".snapshots/foo"));
   });
 
   void test('".snapper" as first segment must be accepted', () => {
-    assert.doesNotThrow(() => validatePath(".snapper/config"));
+    assertOk(validatePath(".snapper/config"));
   });
 });
 
@@ -130,14 +124,14 @@ void describe("ADV-A-004 contributor: 254-byte boundary (SPEC §3.1:91-93)", () 
     // 123 'a' chars + '@' + 130 'b' chars = 254 bytes
     const id = "a".repeat(123) + "@" + "b".repeat(130);
     assert.equal(Buffer.byteLength(id, "utf8"), 254);
-    assert.doesNotThrow(() => validateContributorId(id));
+    assertOk(validateContributorId(id));
   });
 
   void test("exactly 255 bytes is invalid", () => {
     // 124 'a' chars + '@' + 130 'b' chars = 255 bytes
     const id = "a".repeat(124) + "@" + "b".repeat(130);
     assert.equal(Buffer.byteLength(id, "utf8"), 255);
-    throwsSnapError(() => validateContributorId(id), "255-byte ID");
+    throwsSnapError(validateContributorId(id), "255-byte ID");
   });
 });
 
@@ -150,28 +144,28 @@ void describe("ADV-A-004 contributor: 254-byte boundary (SPEC §3.1:91-93)", () 
 
 void describe("ADV-A-005 contributor: whitespace variants (SPEC §3.1:88-93)", () => {
   void test("tab (0x09) must be rejected", () => {
-    throwsSnapError(() => validateContributorId("a\x09b@host.com"), "tab");
+    throwsSnapError(validateContributorId("a\x09b@host.com"), "tab");
   });
 
   void test("LF (0x0A) must be rejected", () => {
-    throwsSnapError(() => validateContributorId("a\x0ab@host.com"), "LF");
+    throwsSnapError(validateContributorId("a\x0ab@host.com"), "LF");
   });
 
   void test("CR (0x0D) must be rejected", () => {
-    throwsSnapError(() => validateContributorId("a\x0db@host.com"), "CR");
+    throwsSnapError(validateContributorId("a\x0db@host.com"), "CR");
   });
 
   void test("VT (0x0B) must be rejected", () => {
-    throwsSnapError(() => validateContributorId("a\x0bb@host.com"), "VT");
+    throwsSnapError(validateContributorId("a\x0bb@host.com"), "VT");
   });
 
   void test("FF (0x0C) must be rejected", () => {
-    throwsSnapError(() => validateContributorId("a\x0cb@host.com"), "FF");
+    throwsSnapError(validateContributorId("a\x0cb@host.com"), "FF");
   });
 
   void test("non-breaking space (U+00A0) must be rejected (non-ASCII)", () => {
     // U+00A0 encodes as 0xC2 0xA0 in UTF-8; charCodeAt returns 160 > 0x7E
-    throwsSnapError(() => validateContributorId("a\u00a0b@host.com"), "NBSP");
+    throwsSnapError(validateContributorId("a\u00a0b@host.com"), "NBSP");
   });
 });
 
@@ -182,15 +176,15 @@ void describe("ADV-A-005 contributor: whitespace variants (SPEC §3.1:88-93)", (
 
 void describe("ADV-A-006 contributor: -> substring (SPEC §3.1:88-93)", () => {
   void test("'a->b@host' must be rejected", () => {
-    throwsSnapError(() => validateContributorId("a->b@host"), "->");
+    throwsSnapError(validateContributorId("a->b@host"), "->");
   });
 
   void test("'user->x@host' must be rejected", () => {
-    throwsSnapError(() => validateContributorId("user->x@host"), "user->x");
+    throwsSnapError(validateContributorId("user->x@host"), "user->x");
   });
 
   void test("'user@ho->st' must be rejected (-> in domain)", () => {
-    throwsSnapError(() => validateContributorId("user@ho->st"), "-> in domain");
+    throwsSnapError(validateContributorId("user@ho->st"), "-> in domain");
   });
 });
 
@@ -210,7 +204,7 @@ void describe("ADV-A-007 version: parseVersionString full-entry sort order (SPEC
     // Full entries: "a@x->2" vs "a@xa->1"
     // Byte comparison: at position 3: '-' (0x2D) vs 'a' (0x61), 0x2D < 0x61
     // So "a@x->2" < "a@xa->1": correct canonical order → must parse OK
-    const v = parseVersionString("(a@x->2,a@xa->1)");
+    const v = assertOk(parseVersionString("(a@x->2,a@xa->1)"));
     assert.equal(v.size, 2);
     assert.equal(v.get("a@x"), 2);
     assert.equal(v.get("a@xa"), 1);
@@ -218,20 +212,20 @@ void describe("ADV-A-007 version: parseVersionString full-entry sort order (SPEC
 
   void test("(a@xa->1,a@x->2) — wrong full-entry order must be rejected", () => {
     // "a@xa->1" > "a@x->2" by byte order, so this is noncanonical → must reject
-    throwsSnapError(() => parseVersionString("(a@xa->1,a@x->2)"), "wrong full-entry order");
+    throwsSnapError(parseVersionString("(a@xa->1,a@x->2)"), "wrong full-entry order");
   });
 
   void test("(a@x->10,b@x->1) — 'a' < 'b' means a@x->10 comes first — accepted", () => {
     // "a@x->10" starts with 'a' (0x61); "b@x->1" starts with 'b' (0x62)
     // 0x61 < 0x62, so a@x->10 < b@x->1: correct order
-    const v = parseVersionString("(a@x->10,b@x->1)");
+    const v = assertOk(parseVersionString("(a@x->10,b@x->1)"));
     assert.equal(v.size, 2);
     assert.equal(v.get("a@x"), 10);
     assert.equal(v.get("b@x"), 1);
   });
 
   void test("(b@x->1,a@x->10) — wrong order must be rejected", () => {
-    throwsSnapError(() => parseVersionString("(b@x->1,a@x->10)"), "b before a");
+    throwsSnapError(parseVersionString("(b@x->1,a@x->10)"), "b before a");
   });
 });
 
@@ -256,9 +250,9 @@ void describe("ADV-A-008 version: formatVersionString full-entry sort (SPEC §3.
     assert.equal(s, "(a@x->2,a@xa->1)");
   });
 
-  void test("round-trip: formatVersionString(parseVersionString(s)) === s", () => {
+  void test("round-trip: formatVersionString(assertOk(parseVersionString(s))) === s", () => {
     const s = "(a@x->2,a@xa->1)";
-    assert.equal(formatVersionString(parseVersionString(s)), s);
+    assert.equal(formatVersionString(assertOk(parseVersionString(s))), s);
   });
 
   void test("formatVersionString empty", () => {
@@ -380,15 +374,15 @@ void describe("ADV-A-010 version: joinVectors keys-only-in-b (SPEC §3.3:119-126
 
 void describe("ADV-A-011 version: parseVersionString explicit zero (SPEC §3.2:107-109)", () => {
   void test("(a@x->0) must be rejected — explicit zero", () => {
-    throwsSnapError(() => parseVersionString("(a@x->0)"), "explicit zero");
+    throwsSnapError(parseVersionString("(a@x->0)"), "explicit zero");
   });
 
   void test("(a@x->00) must be rejected — leading zero + zero value", () => {
-    throwsSnapError(() => parseVersionString("(a@x->00)"), "leading zero zero");
+    throwsSnapError(parseVersionString("(a@x->00)"), "leading zero zero");
   });
 
   void test("(a@x->01) must be rejected — leading zero", () => {
-    throwsSnapError(() => parseVersionString("(a@x->01)"), "leading zero");
+    throwsSnapError(parseVersionString("(a@x->01)"), "leading zero");
   });
 });
 
@@ -398,12 +392,12 @@ void describe("ADV-A-011 version: parseVersionString explicit zero (SPEC §3.2:1
 
 void describe("ADV-A-012 version: duplicate IDs in version string (SPEC §3.2:107-109)", () => {
   void test("(a@x->1,a@x->2) — duplicate ID must be rejected", () => {
-    throwsSnapError(() => parseVersionString("(a@x->1,a@x->2)"), "dup a@x");
+    throwsSnapError(parseVersionString("(a@x->1,a@x->2)"), "dup a@x");
   });
 
   void test("(a@x->1,b@x->1,a@x->3) — duplicate ID in longer list", () => {
     // Note: this would also fail sort check, but dup check should fire
-    throwsSnapError(() => parseVersionString("(a@x->1,b@x->1,a@x->3)"), "dup a@x longer");
+    throwsSnapError(parseVersionString("(a@x->1,b@x->1,a@x->3)"), "dup a@x longer");
   });
 });
 
@@ -417,12 +411,12 @@ void describe("ADV-A-012 version: duplicate IDs in version string (SPEC §3.2:10
 void describe("ADV-A-013 path: 0x7E boundary (SPEC §2:67-71)", () => {
   void test("path with 0x7E ('~') character must be accepted", () => {
     // '~' is 0x7E, a valid printable non-control character
-    assert.doesNotThrow(() => validatePath("a~b"));
+    assertOk(validatePath("a~b"));
   });
 
   void test("path with 0x7F (DEL) must be rejected", () => {
     // 0x7F is the DEL control character — must be rejected
-    throwsSnapError(() => validatePath("a\x7fb"), "DEL = 0x7F");
+    throwsSnapError(validatePath("a\x7fb"), "DEL = 0x7F");
   });
 });
 

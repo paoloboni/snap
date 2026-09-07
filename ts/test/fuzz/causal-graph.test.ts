@@ -25,8 +25,28 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 
-import { joinRepositories, replay } from "../../src/repo/replay.js";
+import {
+  joinRepositories as joinRepositoriesResult,
+  replay as replayResult,
+} from "../../src/repo/replay.js";
+import type { Warning } from "../../src/repo/replay.js";
 import type { Repository, Patch } from "../../src/repo/model.js";
+import type { Tree } from "../../src/core/tree.js";
+import { assertOk } from "../helpers/result.js";
+
+// Every scenario in this file operates on valid, causally-closed histories, so
+// replay and import must always succeed; unwrap once here and keep the call
+// sites focused on the convergence properties being asserted.
+function replay(repo: Repository): { tree: Tree; warnings: readonly Warning[] } {
+  return assertOk(replayResult(repo));
+}
+
+function joinRepositories(
+  local: Repository,
+  remote: Repository,
+): { repo: Repository; warnings: readonly Warning[] } {
+  return assertOk(joinRepositoriesResult(local, remote));
+}
 
 // ---------------------------------------------------------------------------
 // Helpers

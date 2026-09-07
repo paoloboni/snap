@@ -1,6 +1,8 @@
 // Tracked-path validation, UTF-8 byte order comparison, and prefix operations
 
 import { errPathIsInvalid } from "../errors.js";
+import type { SnapResult } from "../errors.js";
+import { ok, err } from "../result.js";
 
 // Validate a tracked path (SPEC §2):
 //   - Non-empty
@@ -11,30 +13,30 @@ import { errPathIsInvalid } from "../errors.js";
 //   - No first component equal to ".snap"
 //   - No null bytes or control characters (< 0x20 or === 0x7F)
 //   - No backslash
-// Throws SnapError if invalid
-export function validatePath(p: string): void {
+// Returns an error value if invalid
+export function validatePath(p: string): SnapResult<void> {
   if (p.length === 0) {
-    throw errPathIsInvalid(p);
+    return err(errPathIsInvalid(p));
   }
 
   // No leading slash
   if (p.startsWith("/")) {
-    throw errPathIsInvalid(p);
+    return err(errPathIsInvalid(p));
   }
 
   // No trailing slash
   if (p.endsWith("/")) {
-    throw errPathIsInvalid(p);
+    return err(errPathIsInvalid(p));
   }
 
   // Check for control characters (< 0x20 or === 0x7F), null bytes, and backslash
   for (let i = 0; i < p.length; i++) {
     const code = p.charCodeAt(i);
     if (code < 0x20 || code === 0 || code === 0x7f) {
-      throw errPathIsInvalid(p);
+      return err(errPathIsInvalid(p));
     }
     if (p[i] === "\\") {
-      throw errPathIsInvalid(p);
+      return err(errPathIsInvalid(p));
     }
   }
 
@@ -44,17 +46,19 @@ export function validatePath(p: string): void {
     const seg = segments[i];
     if (seg === undefined || seg === "") {
       // Empty segment means leading slash, trailing slash, or "//"
-      throw errPathIsInvalid(p);
+      return err(errPathIsInvalid(p));
     }
     if (seg === "." || seg === "..") {
-      throw errPathIsInvalid(p);
+      return err(errPathIsInvalid(p));
     }
   }
 
   // No first segment equal to ".snap"
   if (segments[0] === ".snap") {
-    throw errPathIsInvalid(p);
+    return err(errPathIsInvalid(p));
   }
+
+  return ok(undefined);
 }
 
 // Compare two paths in unsigned lexicographic UTF-8 byte order

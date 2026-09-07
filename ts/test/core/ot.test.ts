@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 
 import { transform } from "../../src/core/ot.js";
 import { applyEdit } from "../../src/core/edit.js";
+import { assertOk } from "../helpers/result.js";
 import { diffReference } from "../../src/core/diff.js";
 import type { DiffScript } from "../../src/core/diff.js";
 import type { Tokens } from "../../src/core/tokens.js";
@@ -52,11 +53,11 @@ function otIntegrationTest(
   expectedFinal: Tokens,
 ): void {
   // Q's result = apply Q to base
-  const afterQ = applyEdit(base, Q) as Tokens;
+  const afterQ = assertOk(applyEdit(base, Q));
   // P' = transform(P, Q)
   const Pprime = transform(P, Q);
   // Final = apply P' to Q's result
-  const final = applyEdit(afterQ, Pprime) as Tokens;
+  const final = assertOk(applyEdit(afterQ, Pprime));
   assert.deepEqual(
     final,
     [...expectedFinal],

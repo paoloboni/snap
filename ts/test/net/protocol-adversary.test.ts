@@ -23,6 +23,7 @@ import { fetchRemote } from "../../src/net/client.js";
 import { writeRepository } from "../../src/repo/store.js";
 import { parseArgs } from "../../src/cli/grammar.js";
 import { SnapError } from "../../src/errors.js";
+import { assertOk, assertErr } from "../helpers/result.js";
 import type { Repository } from "../../src/repo/model.js";
 
 // ---------------------------------------------------------------------------
@@ -99,7 +100,7 @@ async function startMirrorServer(
   const { readRepository } = await import("../../src/repo/store.js");
   const { serializeRepository } = await import("../../src/repo/json.js");
 
-  const repo = await readRepository(repoDir);
+  const repo = assertOk(await readRepository(repoDir));
   const body = serializeRepository(repo);
   const bodyBuffer = Buffer.from(body, "utf8");
 
@@ -352,7 +353,7 @@ void describe("ADV-PA-02: --serve stdout one-line invariant under load", () => {
 void describe("ADV-PA-03: --serve default port 8765", () => {
   // Grammar-level test: parseArgs(["--serve"]) must return port 8765.
   void it("parseArgs(['--serve']) returns port 8765", () => {
-    const cmd = parseArgs(["--serve"]);
+    const cmd = assertOk(parseArgs(["--serve"]));
     assert.equal(cmd.cmd, "serve");
     const serveCmd = cmd as { cmd: "serve"; port: number };
     assert.equal(serveCmd.port, 8765, "default port must be 8765 (SPEC §7.9:585)");
@@ -445,33 +446,23 @@ void describe("ADV-PA-03: --serve default port 8765", () => {
 void describe("ADV-PA-04: --serve port edge cases (grammar)", () => {
   // -1: starts with '-', fails /^\d+$/ → errInvalidPort("-1")
   void it("parseArgs(['--serve', '-1']) throws SnapError with 'invalid port'", () => {
-    assert.throws(
-      () => parseArgs(["--serve", "-1"]),
-      (err: unknown) => {
-        assert.ok(err instanceof SnapError, "expected SnapError");
-        assert.match(err.message, /invalid port/i, "message must contain 'invalid port'");
-        assert.match(err.message, /-1/, "message must contain the bad value '-1'");
-        return true;
-      },
-    );
+    const err = assertErr(parseArgs(["--serve", "-1"]));
+    assert.ok(err instanceof SnapError, "expected SnapError");
+    assert.match(err.message, /invalid port/i, "message must contain 'invalid port'");
+    assert.match(err.message, /-1/, "message must contain the bad value '-1'");
   });
 
   // +8765: starts with '+', fails /^\d+$/ → errInvalidPort("+8765")
   void it("parseArgs(['--serve', '+8765']) throws SnapError with 'invalid port'", () => {
-    assert.throws(
-      () => parseArgs(["--serve", "+8765"]),
-      (err: unknown) => {
-        assert.ok(err instanceof SnapError, "expected SnapError");
-        assert.match(err.message, /invalid port/i);
-        assert.match(err.message, /\+8765/, "message must contain '+8765'");
-        return true;
-      },
-    );
+    const err = assertErr(parseArgs(["--serve", "+8765"]));
+    assert.ok(err instanceof SnapError, "expected SnapError");
+    assert.match(err.message, /invalid port/i);
+    assert.match(err.message, /\+8765/, "message must contain '+8765'");
   });
 
   // 65535: max valid port — must be accepted without error
   void it("parseArgs(['--serve', '65535']) returns port 65535", () => {
-    const cmd = parseArgs(["--serve", "65535"]);
+    const cmd = assertOk(parseArgs(["--serve", "65535"]));
     assert.equal(cmd.cmd, "serve");
     const serveCmd = cmd as { cmd: "serve"; port: number };
     assert.equal(serveCmd.port, 65535, "65535 is the maximum valid port");
@@ -479,48 +470,33 @@ void describe("ADV-PA-04: --serve port edge cases (grammar)", () => {
 
   // 65536: one beyond max — must throw errInvalidPort
   void it("parseArgs(['--serve', '65536']) throws SnapError (pinned PLAN.md §7.1)", () => {
-    assert.throws(
-      () => parseArgs(["--serve", "65536"]),
-      (err: unknown) => {
-        assert.ok(err instanceof SnapError);
-        // §7.1 pins the exact message "snap: invalid port: 65536"
-        assert.equal(
-          err.message,
-          "snap: invalid port: 65536",
-          "exact message from §7.1 pinned inventory",
-        );
-        return true;
-      },
+    const err = assertErr(parseArgs(["--serve", "65536"]));
+    assert.ok(err instanceof SnapError);
+    // §7.1 pins the exact message "snap: invalid port: 65536"
+    assert.equal(
+      err.message,
+      "snap: invalid port: 65536",
+      "exact message from §7.1 pinned inventory",
     );
   });
 
   // non-numeric string: fails /^\d+$/ → errInvalidPort
   void it("parseArgs(['--serve', 'foo']) throws SnapError with 'invalid port'", () => {
-    assert.throws(
-      () => parseArgs(["--serve", "foo"]),
-      (err: unknown) => {
-        assert.ok(err instanceof SnapError);
-        assert.match(err.message, /invalid port/i);
-        return true;
-      },
-    );
+    const err = assertErr(parseArgs(["--serve", "foo"]));
+    assert.ok(err instanceof SnapError);
+    assert.match(err.message, /invalid port/i);
   });
 
   // empty string: fails /^\d+$/ → errInvalidPort
   void it("parseArgs(['--serve', '']) throws SnapError with 'invalid port'", () => {
-    assert.throws(
-      () => parseArgs(["--serve", ""]),
-      (err: unknown) => {
-        assert.ok(err instanceof SnapError);
-        assert.match(err.message, /invalid port/i);
-        return true;
-      },
-    );
+    const err = assertErr(parseArgs(["--serve", ""]));
+    assert.ok(err instanceof SnapError);
+    assert.match(err.message, /invalid port/i);
   });
 
   // port 0: valid — OS assigns a port (SPEC §7.9:585)
   void it("parseArgs(['--serve', '0']) returns port 0", () => {
-    const cmd = parseArgs(["--serve", "0"]);
+    const cmd = assertOk(parseArgs(["--serve", "0"]));
     assert.equal(cmd.cmd, "serve");
     const serveCmd = cmd as { cmd: "serve"; port: number };
     assert.equal(serveCmd.port, 0);
@@ -584,46 +560,31 @@ void describe("ADV-PA-05: redirect handling in fetchRemote", () => {
   // Core assertion: a 302 must produce a SnapError whose message contains "HTTP 302"
   // PLAN.md §7.3 pins "HTTP 302" as a required substring.
   void it("302 response → SnapError with message containing 'HTTP 302'", async () => {
-    await assert.rejects(
-      () => fetchRemote(`${redirectBaseUrl}/repository.json`),
-      (err: unknown) => {
-        assert.ok(err instanceof SnapError, `expected SnapError, got ${String(err)}`);
-        assert.ok(
-          err.message.includes("HTTP 302"),
-          `message must contain 'HTTP 302' (PLAN.md §7.3); got: "${err.message}"`,
-        );
-        return true;
-      },
+    const err = assertErr(await fetchRemote(`${redirectBaseUrl}/repository.json`));
+    assert.ok(err instanceof SnapError, `expected SnapError, got ${String(err)}`);
+    assert.ok(
+      err.message.includes("HTTP 302"),
+      `message must contain 'HTTP 302' (PLAN.md §7.3); got: "${err.message}"`,
     );
   });
 
   // 301 redirect also rejected with "HTTP 301"
   void it("301 response → SnapError with message containing 'HTTP 301'", async () => {
-    await assert.rejects(
-      () => fetchRemote(`${redirectBaseUrl}/301`),
-      (err: unknown) => {
-        assert.ok(err instanceof SnapError);
-        assert.ok(
-          err.message.includes("HTTP 301"),
-          `message must contain 'HTTP 301'; got: "${err.message}"`,
-        );
-        return true;
-      },
+    const err = assertErr(await fetchRemote(`${redirectBaseUrl}/301`));
+    assert.ok(err instanceof SnapError);
+    assert.ok(
+      err.message.includes("HTTP 301"),
+      `message must contain 'HTTP 301'; got: "${err.message}"`,
     );
   });
 
   // 307 redirect also rejected with "HTTP 307"
   void it("307 response → SnapError with message containing 'HTTP 307'", async () => {
-    await assert.rejects(
-      () => fetchRemote(`${redirectBaseUrl}/307`),
-      (err: unknown) => {
-        assert.ok(err instanceof SnapError);
-        assert.ok(
-          err.message.includes("HTTP 307"),
-          `message must contain 'HTTP 307'; got: "${err.message}"`,
-        );
-        return true;
-      },
+    const err = assertErr(await fetchRemote(`${redirectBaseUrl}/307`));
+    assert.ok(err instanceof SnapError);
+    assert.ok(
+      err.message.includes("HTTP 307"),
+      `message must contain 'HTTP 307'; got: "${err.message}"`,
     );
   });
 
@@ -632,17 +593,12 @@ void describe("ADV-PA-05: redirect handling in fetchRemote", () => {
   // If the client followed the redirect, it would get non-JSON and throw errInvalidJson.
   // If it correctly rejects redirects, it throws errHttpRedirect with "HTTP 302".
   void it("fetchRemote does NOT follow redirects (one GET, no retry)", async () => {
-    await assert.rejects(
-      () => fetchRemote(`${redirectBaseUrl}/repository.json`),
-      (err: unknown) => {
-        assert.ok(err instanceof SnapError, "must reject with SnapError");
-        // The error must name the status (302), not be a JSON parse error.
-        assert.ok(
-          err.message.includes("302"),
-          `redirect status must appear in the error, not a JSON error; got: "${err.message}"`,
-        );
-        return true;
-      },
+    const err = assertErr(await fetchRemote(`${redirectBaseUrl}/repository.json`));
+    assert.ok(err instanceof SnapError, "must reject with SnapError");
+    // The error must name the status (302), not be a JSON parse error.
+    assert.ok(
+      err.message.includes("302"),
+      `redirect status must appear in the error, not a JSON error; got: "${err.message}"`,
     );
   });
 

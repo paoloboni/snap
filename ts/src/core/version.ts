@@ -7,6 +7,8 @@
 // SPEC §3.4: Snap order — lexicographic on sorted union of IDs
 
 import { errInvalidVersion } from "../errors.js";
+import type { SnapResult } from "../errors.js";
+import { ok, err } from "../result.js";
 import { validateContributorId } from "./contributor.js";
 
 // A single author+revision pair (one entry in a version vector)
@@ -22,29 +24,29 @@ export type VersionVector = ReadonlyMap<string, number>;
 const MAX_SAFE_INTEGER = 9007199254740991; // Number.MAX_SAFE_INTEGER
 
 /**
- * Parse a revision string.  Returns the integer or throws SnapError.
+ * Parse a revision string. Returns the integer or an error value.
  * Leading zeroes and non-positive values are errors.
  */
-function parseRevision(s: string, context: string): number {
+function parseRevision(s: string, context: string): SnapResult<number> {
   if (s.length === 0) {
-    throw errInvalidVersion(context);
+    return err(errInvalidVersion(context));
   }
   // No leading zeros (a single "0" is also invalid since revision must be positive)
   if (s.length > 1 && s[0] === "0") {
-    throw errInvalidVersion(context);
+    return err(errInvalidVersion(context));
   }
   // Must be all digits
   for (let i = 0; i < s.length; i++) {
     const c = s.charCodeAt(i);
     if (c < 0x30 || c > 0x39) {
-      throw errInvalidVersion(context);
+      return err(errInvalidVersion(context));
     }
   }
   const n = Number(s);
   if (!Number.isInteger(n) || n <= 0 || n > MAX_SAFE_INTEGER) {
-    throw errInvalidVersion(context);
+    return err(errInvalidVersion(context));
   }
-  return n;
+  return ok(n);
 }
 
 // ---------------------------------------------------------------------------
@@ -53,25 +55,26 @@ function parseRevision(s: string, context: string): number {
 
 /**
  * Parse "author->revision" — a single author-revision pair.
- * Throws SnapError on invalid syntax.
+ * Returns an error value on invalid syntax.
  */
-export function parseVersion(s: string): Version {
+export function parseVersion(s: string): SnapResult<Version> {
   const arrowIdx = s.lastIndexOf("->");
   if (arrowIdx < 0) {
-    throw errInvalidVersion(s);
+    return err(errInvalidVersion(s));
   }
   const author = s.slice(0, arrowIdx);
   const revStr = s.slice(arrowIdx + 2);
 
   // Validate the contributor ID
-  try {
-    validateContributorId(author);
-  } catch {
-    throw errInvalidVersion(s);
+  if (!validateContributorId(author).ok) {
+    return err(errInvalidVersion(s));
   }
 
   const revision = parseRevision(revStr, s);
-  return { author, revision };
+  if (!revision.ok) {
+    return err(revision.error);
+  }
+  return ok({ author, revision: revision.value });
 }
 
 /** Format a single Version to "author->revision" */
@@ -88,27 +91,27 @@ export function formatVersion(v: Version): string {
  * SPEC §3.2: duplicate IDs, explicit zeroes, leading zeroes, overflow, whitespace,
  * noncanonical ordering are all errors.
  */
-export function parseVersionString(s: string): VersionVector {
+export function parseVersionString(s: string): SnapResult<VersionVector> {
   if (s === "()") {
-    return new Map();
+    return ok(new Map());
   }
 
   if (!s.startsWith("(") || !s.endsWith(")")) {
-    throw errInvalidVersion(s);
+    return err(errInvalidVersion(s));
   }
 
   const inner = s.slice(1, -1);
 
   if (inner.length === 0) {
     // "()" already handled above; if we somehow land here it means "()" with no inner
-    throw errInvalidVersion(s);
+    return err(errInvalidVersion(s));
   }
 
   // No whitespace allowed
   for (let i = 0; i < inner.length; i++) {
     const c = inner.charCodeAt(i);
     if (c <= 0x20) {
-      throw errInvalidVersion(s);
+      return err(errInvalidVersion(s));
     }
   }
 
@@ -118,33 +121,34 @@ export function parseVersionString(s: string): VersionVector {
 
   for (const entry of entries) {
     if (entry.length === 0) {
-      throw errInvalidVersion(s);
+      return err(errInvalidVersion(s));
     }
 
     const arrowIdx = entry.lastIndexOf("->");
     if (arrowIdx < 0) {
-      throw errInvalidVersion(s);
+      return err(errInvalidVersion(s));
     }
 
     const id = entry.slice(0, arrowIdx);
     const revStr = entry.slice(arrowIdx + 2);
 
     // Validate contributor ID
-    try {
-      validateContributorId(id);
-    } catch {
-      throw errInvalidVersion(s);
+    if (!validateContributorId(id).ok) {
+      return err(errInvalidVersion(s));
     }
 
     // Validate revision
     const revision = parseRevision(revStr, s);
+    if (!revision.ok) {
+      return err(revision.error);
+    }
 
     // Check for duplicate IDs
     if (map.has(id)) {
-      throw errInvalidVersion(s);
+      return err(errInvalidVersion(s));
     }
 
-    map.set(id, revision);
+    map.set(id, revision.value);
     sortedEntries.push(entry);
   }
 
@@ -155,11 +159,11 @@ export function parseVersionString(s: string): VersionVector {
     const prevBuf = Buffer.from(prev, "utf8");
     const currBuf = Buffer.from(curr, "utf8");
     if (prevBuf.compare(currBuf) >= 0) {
-      throw errInvalidVersion(s);
+      return err(errInvalidVersion(s));
     }
   }
 
-  return map;
+  return ok(map);
 }
 
 /**

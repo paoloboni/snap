@@ -9,6 +9,8 @@ import {
   errInvalidContributorId,
   errInvalidCommandOrArguments,
 } from "../errors.js";
+import type { SnapResult } from "../errors.js";
+import { ok, err } from "../result.js";
 
 /**
  * Run the config command.
@@ -21,33 +23,33 @@ export async function run(
   value: string | undefined,
   global_: boolean,
   cwd: string,
-): Promise<number> {
+): Promise<SnapResult<number>> {
   // Only contributor.id is supported
   if (key !== "contributor.id") {
-    throw errInvalidCommandOrArguments();
+    return err(errInvalidCommandOrArguments());
   }
 
   if (value !== undefined) {
     // Setting the ID: validate first
-    try {
-      validateContributorId(value);
-    } catch {
-      throw errInvalidContributorId(value);
+    if (!validateContributorId(value).ok) {
+      return err(errInvalidContributorId(value));
     }
 
     if (global_) {
       // Write to global config
-      await writeGlobalConfig({ contributorId: value });
+      const written = await writeGlobalConfig({ contributorId: value });
+      if (!written.ok) return err(written.error);
     } else {
       // Write to local config — need a repository
       const repoDir = findRepository(cwd);
       if (repoDir === null) {
-        throw errNotARepository();
+        return err(errNotARepository());
       }
-      await writeLocalConfig(repoDir, { contributorId: value });
+      const written = await writeLocalConfig(repoDir, { contributorId: value });
+      if (!written.ok) return err(written.error);
     }
     // Print nothing on success
-    return 0;
+    return ok(0);
   } else {
     // Reading the ID
     if (global_) {
@@ -57,18 +59,19 @@ export async function run(
       // But test 14 step 5 shows this is `errInvalidCommandOrArguments`
       // Re-reading: SPEC §7.2 says `snap config [--global] contributor.id <id>`
       // The spec doesn't show a "get" form for --global. Test 14 confirms error.
-      throw errInvalidCommandOrArguments();
+      return err(errInvalidCommandOrArguments());
     } else {
       // Read from local config (no-value means "print")
       const repoDir = findRepository(cwd);
       if (repoDir === null) {
-        throw errNotARepository();
+        return err(errNotARepository());
       }
       const config = await readConfig(repoDir);
-      if (config.contributorId !== undefined) {
-        process.stdout.write(config.contributorId + "\n");
+      if (!config.ok) return err(config.error);
+      if (config.value.contributorId !== undefined) {
+        process.stdout.write(config.value.contributorId + "\n");
       }
-      return 0;
+      return ok(0);
     }
   }
 }

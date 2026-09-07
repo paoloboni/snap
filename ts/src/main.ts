@@ -1,23 +1,20 @@
 import { parseArgs } from "./cli/grammar.js";
-import { dispatch, writeError } from "./cli/dispatch.js";
-import { SnapError, errInternalError } from "./errors.js";
+import { dispatch, reportError } from "./cli/dispatch.js";
+import { errInternalError } from "./errors.js";
+import { attemptAsync } from "./result.js";
 
 async function main(): Promise<void> {
-  let exitCode: number;
-  try {
+  // Snap itself never throws; this guard only catches genuine programming bugs
+  // and maps them to the §7 "unexpected internal failure" contract (exit 2).
+  const run = await attemptAsync(async () => {
     const cmd = parseArgs(process.argv.slice(2));
-    exitCode = await dispatch(cmd, process.cwd());
-  } catch (e) {
-    if (e instanceof SnapError) {
-      writeError(e.message);
-      exitCode = e.exitCode;
-    } else {
-      const wrapped = errInternalError(e);
-      writeError(wrapped.message);
-      exitCode = 2;
+    if (!cmd.ok) {
+      return reportError(cmd.error);
     }
-  }
-  process.exit(exitCode);
+    return await dispatch(cmd.value, process.cwd());
+  }, errInternalError);
+
+  process.exit(run.ok ? run.value : reportError(run.error));
 }
 
 void main();

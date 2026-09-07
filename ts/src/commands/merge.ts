@@ -8,6 +8,8 @@ import { parseJSON } from "../repo/json.js";
 import { validateRepository } from "../repo/validate.js";
 import { fetchRemote } from "../net/client.js";
 import { errNotARepository, errWorkingTreeDirty, errUnsupportedEntry } from "../errors.js";
+import type { SnapResult } from "../errors.js";
+import { ok, err, attemptAsync } from "../result.js";
 import { replay, joinRepositories } from "../repo/replay.js";
 import { scanWorktree } from "../fsys/worktree.js";
 import { materialize } from "../fsys/materialize.js";
@@ -31,26 +33,34 @@ import type { Repository } from "../repo/model.js";
  * 3. Unsupported working tree entries → errUnsupportedEntry
  * 4. Working tree dirty → errWorkingTreeDirty
  */
-export async function run(url: string, cwd: string): Promise<number> {
+export async function run(url: string, cwd: string): Promise<SnapResult<number>> {
   // Step 1: Find local repository
   const repoDir = findRepository(cwd);
   if (repoDir === null) {
-    throw errNotARepository();
+    return err(errNotARepository());
   }
 
   // Step 2: Read and validate local repository
-  const localRepo = await readRepository(repoDir);
+  const localRepoResult = await readRepository(repoDir);
+  if (!localRepoResult.ok) return err(localRepoResult.error);
+  const localRepo = localRepoResult.value;
 
   // Step 3: Scan working tree for unsupported entries
-  const entries = await scanWorktree(repoDir);
+  const scanned = await scanWorktree(repoDir);
+  if (!scanned.ok) return err(scanned.error);
+  const entries = scanned.value;
+
   for (const entry of entries) {
     if (entry.type === "unsupported") {
-      throw errUnsupportedEntry(entry.path);
+      return err(errUnsupportedEntry(entry.path));
     }
   }
 
   // Step 4: Check for dirty working tree
-  const { tree: currentTree } = replay(localRepo);
+  const localReplayed = replay(localRepo);
+  if (!localReplayed.ok) return err(localReplayed.error);
+  const currentTree = localReplayed.value.tree;
+
   const worktreeMap = new Map<string, Buffer>();
   for (const entry of entries) {
     if (entry.type === "tracked") {
@@ -59,28 +69,37 @@ export async function run(url: string, cwd: string): Promise<number> {
   }
 
   if (checkDirty(currentTree, worktreeMap)) {
-    throw errWorkingTreeDirty();
+    return err(errWorkingTreeDirty());
   }
 
   // Step 5: Load and validate remote repository
-  const remoteRepo = await loadRemoteRepo(url, cwd);
+  const remoteRepoResult = await loadRemoteRepo(url, cwd);
+  if (!remoteRepoResult.ok) return err(remoteRepoResult.error);
+  const remoteRepo = remoteRepoResult.value;
 
   // Step 6: Compute pre-merge warnings (to detect NEW warnings added by merge)
-  const { warnings: preWarnings } = replay(localRepo);
-  const preWarningKeys = new Set(preWarnings.map((w) => `${w.path}:${w.reason}`));
+  const preWarningKeys = new Set(localReplayed.value.warnings.map((w) => `${w.path}:${w.reason}`));
 
   // Step 7: Join repositories
-  const { repo: mergedRepo, warnings: allWarnings } = joinRepositories(localRepo, remoteRepo);
+  const joined = joinRepositories(localRepo, remoteRepo);
+  if (!joined.ok) return err(joined.error);
+  const mergedRepo = joined.value.repo;
 
   // Step 8: Compute new warnings (only those not present before merge)
-  const newWarnings = allWarnings.filter((w) => !preWarningKeys.has(`${w.path}:${w.reason}`));
+  const newWarnings = joined.value.warnings.filter(
+    (w) => !preWarningKeys.has(`${w.path}:${w.reason}`),
+  );
 
   // Step 9: Materialize merged tree (update working files first per SPEC §10)
-  const { tree: newTree } = replay(mergedRepo);
-  await materialize(repoDir, newTree);
+  const mergedReplayed = replay(mergedRepo);
+  if (!mergedReplayed.ok) return err(mergedReplayed.error);
+
+  const installed = await materialize(repoDir, mergedReplayed.value.tree);
+  if (!installed.ok) return err(installed.error);
 
   // Step 10: Write merged repository
-  await writeRepository(repoDir, mergedRepo);
+  const written = await writeRepository(repoDir, mergedRepo);
+  if (!written.ok) return err(written.error);
 
   // Step 11: Print warnings to stderr (sorted by path, then reason — from replay)
   for (const warning of newWarnings) {
@@ -103,7 +122,7 @@ export async function run(url: string, cwd: string): Promise<number> {
     process.stdout.write(versionStr + "\n");
   }
 
-  return 0;
+  return ok(0);
 }
 
 /**
@@ -111,7 +130,7 @@ export async function run(url: string, cwd: string): Promise<number> {
  * SPEC §7: "A repository operand is an explicit http:// or https:// URL,
  * or otherwise a local path to a repository root."
  */
-async function loadRemoteRepo(url: string, cwd: string): Promise<Repository> {
+async function loadRemoteRepo(url: string, cwd: string): Promise<SnapResult<Repository>> {
   if (url.startsWith("http://") || url.startsWith("https://")) {
     // HTTP repository
     return fetchRemote(url);
@@ -119,14 +138,17 @@ async function loadRemoteRepo(url: string, cwd: string): Promise<Repository> {
     // Local path
     const absPath = nodePath.resolve(cwd, url);
     const repoJsonPath = nodePath.join(absPath, ".snap", "repository.json");
-    let text: string;
-    try {
-      text = await fs.readFile(repoJsonPath, "utf8");
-    } catch {
-      throw errNotARepository();
-    }
-    const raw = parseJSON(text);
-    return validateRepository(raw);
+
+    const text = await attemptAsync(
+      () => fs.readFile(repoJsonPath, "utf8"),
+      () => errNotARepository(),
+    );
+    if (!text.ok) return err(text.error);
+
+    const raw = parseJSON(text.value);
+    if (!raw.ok) return err(raw.error);
+
+    return validateRepository(raw.value);
   }
 }
 

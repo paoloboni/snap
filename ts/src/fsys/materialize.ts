@@ -4,8 +4,10 @@
 import * as fs from "node:fs/promises";
 import type { Dirent } from "node:fs";
 import * as nodePath from "node:path";
-import { comparePaths } from "../core/path.js";
 import type { Tree } from "../core/tree.js";
+import { errInternalError } from "../errors.js";
+import type { SnapResult } from "../errors.js";
+import { ok, err, attemptAsync } from "../result.js";
 
 /**
  * Install the exact tree at workDir:
@@ -14,7 +16,7 @@ import type { Tree } from "../core/tree.js";
  * 3. Handle file↔directory transitions.
  * 4. Clean up temp files even on failure.
  */
-export async function materialize(workDir: string, tree: Tree): Promise<void> {
+export async function materialize(workDir: string, tree: Tree): Promise<SnapResult<void>> {
   const treePaths = tree.paths();
 
   // Step 1: Write all tree files atomically
@@ -25,18 +27,24 @@ export async function materialize(workDir: string, tree: Tree): Promise<void> {
 
     // Handle file→directory transition: if a file exists at a path that we need
     // to be a directory, remove it first.
-    await ensureDirectoryForFile(absPath);
+    const prepared = await ensureDirectoryForFile(absPath);
+    if (!prepared.ok) return err(prepared.error);
 
     // Atomic write: write to temp file in same dir, then rename
-    await atomicWrite(dir, absPath, bytes);
+    const written = await atomicWrite(dir, absPath, bytes);
+    if (!written.ok) return err(written.error);
   }
 
   // Step 2: Remove files currently in workDir NOT in tree (skip .snap/)
   const treePathSet = new Set(treePaths);
-  await removeExtraFiles(workDir, workDir, treePathSet);
+  const pruned = await removeExtraFiles(workDir, workDir, treePathSet);
+  if (!pruned.ok) return err(pruned.error);
 
   // Step 3: Remove empty directories (except .snap/)
-  await removeEmptyDirs(workDir, workDir);
+  const cleaned = await removeEmptyDirs(workDir, workDir);
+  if (!cleaned.ok) return err(cleaned.error);
+
+  return ok(undefined);
 }
 
 /**
@@ -44,16 +52,20 @@ export async function materialize(workDir: string, tree: Tree): Promise<void> {
  * If a file exists at an intermediate path (file→directory transition), remove it first.
  * If a directory exists at the target path itself (directory→file transition), remove it.
  */
-async function ensureDirectoryForFile(absFilePath: string): Promise<void> {
-  // Check if the target path itself is a directory (directory→file transition)
-  try {
-    const stat = await fs.stat(absFilePath);
-    if (stat.isDirectory()) {
-      // Remove the existing directory so we can write a file there
-      await fs.rm(absFilePath, { recursive: true, force: true });
-    }
-  } catch {
-    // Path doesn't exist yet — that's fine
+async function ensureDirectoryForFile(absFilePath: string): Promise<SnapResult<void>> {
+  // Check if the target path itself is a directory (directory→file transition).
+  // A stat failure just means the path does not exist yet.
+  const targetIsDir = await attemptAsync(
+    async () => (await fs.stat(absFilePath)).isDirectory(),
+    () => false,
+  );
+  if (targetIsDir.ok && targetIsDir.value) {
+    // Remove the existing directory so we can write a file there
+    const removed = await attemptAsync(
+      () => fs.rm(absFilePath, { recursive: true, force: true }),
+      errInternalError,
+    );
+    if (!removed.ok) return err(removed.error);
   }
 
   const dir = nodePath.dirname(absFilePath);
@@ -68,44 +80,54 @@ async function ensureDirectoryForFile(absFilePath: string): Promise<void> {
   }
 
   for (const part of parts) {
-    let stat: Awaited<ReturnType<typeof fs.stat>> | null = null;
-    try {
-      stat = await fs.stat(part);
-    } catch {
+    const isDir = await attemptAsync(
+      async () => (await fs.stat(part)).isDirectory(),
+      () => null,
+    );
+
+    if (!isDir.ok) {
       // Doesn't exist — create it
-      await fs.mkdir(part, { recursive: true });
+      const made = await attemptAsync(() => fs.mkdir(part, { recursive: true }), errInternalError);
+      if (!made.ok) return err(made.error);
       break;
     }
-    if (!stat.isDirectory()) {
+
+    if (!isDir.value) {
       // A file exists at this path — remove it (file→directory transition)
-      await fs.rm(part, { force: true });
-      await fs.mkdir(part, { recursive: true });
+      const removed = await attemptAsync(() => fs.rm(part, { force: true }), errInternalError);
+      if (!removed.ok) return err(removed.error);
+      const made = await attemptAsync(() => fs.mkdir(part, { recursive: true }), errInternalError);
+      if (!made.ok) return err(made.error);
       break;
     }
   }
 
   // Finally ensure the directory chain exists
-  await fs.mkdir(dir, { recursive: true });
+  const made = await attemptAsync(() => fs.mkdir(dir, { recursive: true }), errInternalError);
+  if (!made.ok) return err(made.error);
+
+  return ok(undefined);
 }
 
 /**
  * Write bytes to absPath atomically using a same-directory temp file.
  * Cleans up the temp file on failure.
  */
-async function atomicWrite(dir: string, absPath: string, bytes: Buffer): Promise<void> {
+async function atomicWrite(dir: string, absPath: string, bytes: Buffer): Promise<SnapResult<void>> {
   const tempPath = nodePath.join(dir, `.snap-tmp-${Math.random().toString(36).slice(2)}`);
-  try {
+
+  const written = await attemptAsync(async () => {
     await fs.writeFile(tempPath, bytes);
     await fs.rename(tempPath, absPath);
-  } catch (err) {
-    // Clean up temp file on failure
-    try {
-      await fs.unlink(tempPath);
-    } catch {
-      // Ignore cleanup errors
-    }
-    throw err;
+  }, errInternalError);
+
+  if (!written.ok) {
+    // Best-effort cleanup; a failure to remove the temp file is ignored.
+    await attemptAsync(() => fs.unlink(tempPath), errInternalError);
+    return err(written.error);
   }
+
+  return ok(undefined);
 }
 
 /**
@@ -116,15 +138,14 @@ async function removeExtraFiles(
   rootDir: string,
   currentDir: string,
   treePathSet: Set<string>,
-): Promise<void> {
-  let dirents: Dirent[];
-  try {
-    dirents = await fs.readdir(currentDir, { withFileTypes: true, encoding: "utf8" });
-  } catch {
-    return;
-  }
+): Promise<SnapResult<void>> {
+  const dirents = await attemptAsync(
+    (): Promise<Dirent[]> => fs.readdir(currentDir, { withFileTypes: true, encoding: "utf8" }),
+    () => null,
+  );
+  if (!dirents.ok) return ok(undefined);
 
-  for (const dirent of dirents) {
+  for (const dirent of dirents.value) {
     const name = dirent.name;
     const absPath = nodePath.join(currentDir, name);
     const relPath =
@@ -143,104 +164,77 @@ async function removeExtraFiles(
       const hasChildren = [...treePathSet].some((p) => p.startsWith(prefix));
       if (hasChildren) {
         // Recurse into directory to remove extra files within it
-        await removeExtraFiles(rootDir, absPath, treePathSet);
+        const sub = await removeExtraFiles(rootDir, absPath, treePathSet);
+        if (!sub.ok) return err(sub.error);
       } else {
         // No tree paths under this dir — remove the whole directory
-        await fs.rm(absPath, { recursive: true, force: true });
+        const removed = await attemptAsync(
+          () => fs.rm(absPath, { recursive: true, force: true }),
+          errInternalError,
+        );
+        if (!removed.ok) return err(removed.error);
       }
     } else {
       // It's a file (or symlink/special) — remove if not in tree
       if (!treePathSet.has(relPath)) {
-        await fs.unlink(absPath);
+        const removed = await attemptAsync(() => fs.unlink(absPath), errInternalError);
+        if (!removed.ok) return err(removed.error);
       }
     }
   }
+
+  return ok(undefined);
 }
 
 /**
  * Remove empty directories (bottom-up), skipping .snap/.
- * Returns true if the directory itself is now empty (and can be removed by caller).
+ * Resolves to true if the directory itself is now empty (and was removed).
  */
-async function removeEmptyDirs(rootDir: string, currentDir: string): Promise<boolean> {
+async function removeEmptyDirs(rootDir: string, currentDir: string): Promise<SnapResult<boolean>> {
   if (currentDir === rootDir) {
     // At root, just process children — don't remove rootDir itself
-    let dirents: Dirent[];
-    try {
-      dirents = await fs.readdir(currentDir, { withFileTypes: true, encoding: "utf8" });
-    } catch {
-      return false;
-    }
+    const dirents = await attemptAsync(
+      (): Promise<Dirent[]> => fs.readdir(currentDir, { withFileTypes: true, encoding: "utf8" }),
+      () => null,
+    );
+    if (!dirents.ok) return ok(false);
 
-    for (const dirent of dirents) {
+    for (const dirent of dirents.value) {
       if (!dirent.isDirectory()) continue;
-      if (currentDir === rootDir && dirent.name === ".snap") continue;
+      if (dirent.name === ".snap") continue;
       const absPath = nodePath.join(currentDir, dirent.name);
-      await removeEmptyDirs(rootDir, absPath);
+      const sub = await removeEmptyDirs(rootDir, absPath);
+      if (!sub.ok) return err(sub.error);
     }
-    return false;
+    return ok(false);
   }
 
-  let dirents: Dirent[];
-  try {
-    dirents = await fs.readdir(currentDir, { withFileTypes: true, encoding: "utf8" });
-  } catch {
-    return false;
-  }
+  const dirents = await attemptAsync(
+    (): Promise<Dirent[]> => fs.readdir(currentDir, { withFileTypes: true, encoding: "utf8" }),
+    () => null,
+  );
+  if (!dirents.ok) return ok(false);
 
   // Recurse first
-  for (const dirent of dirents) {
+  for (const dirent of dirents.value) {
     if (!dirent.isDirectory()) continue;
     const absPath = nodePath.join(currentDir, dirent.name);
-    await removeEmptyDirs(rootDir, absPath);
+    const sub = await removeEmptyDirs(rootDir, absPath);
+    if (!sub.ok) return err(sub.error);
   }
 
   // Re-read after recursion to see if dir is now empty
-  let afterNames: string[];
-  try {
-    afterNames = await fs.readdir(currentDir, { encoding: "utf8" });
-  } catch {
-    return false;
+  const afterNames = await attemptAsync(
+    (): Promise<string[]> => fs.readdir(currentDir, { encoding: "utf8" }),
+    () => null,
+  );
+  if (!afterNames.ok) return ok(false);
+
+  if (afterNames.value.length === 0) {
+    const removed = await attemptAsync(() => fs.rmdir(currentDir), errInternalError);
+    if (!removed.ok) return err(removed.error);
+    return ok(true);
   }
 
-  if (afterNames.length === 0) {
-    await fs.rmdir(currentDir);
-    return true;
-  }
-  return false;
-}
-
-/**
- * Scan working directory (excluding .snap/) and return all relative file paths.
- * Sorted by comparePaths.
- */
-export async function scanWorkDir(workDir: string): Promise<string[]> {
-  const paths: string[] = [];
-  await collectPaths(workDir, workDir, paths);
-  paths.sort(comparePaths);
-  return paths;
-}
-
-async function collectPaths(rootDir: string, currentDir: string, paths: string[]): Promise<void> {
-  let dirents: Dirent[];
-  try {
-    dirents = await fs.readdir(currentDir, { withFileTypes: true, encoding: "utf8" });
-  } catch {
-    return;
-  }
-  for (const dirent of dirents) {
-    const name = dirent.name;
-    const absPath = nodePath.join(currentDir, name);
-    const relPath =
-      currentDir === rootDir
-        ? name
-        : nodePath.relative(rootDir, absPath).split(nodePath.sep).join("/");
-
-    if (currentDir === rootDir && name === ".snap") continue;
-
-    if (dirent.isDirectory()) {
-      await collectPaths(rootDir, absPath, paths);
-    } else {
-      paths.push(relPath);
-    }
-  }
+  return ok(false);
 }

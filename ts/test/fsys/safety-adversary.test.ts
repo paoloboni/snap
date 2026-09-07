@@ -16,6 +16,7 @@ import * as nodePath from "node:path";
 import * as os from "node:os";
 
 import { materialize } from "../../src/fsys/materialize.js";
+import { assertOk } from "../helpers/result.js";
 import { findRepository } from "../../src/repo/store.js";
 import { readConfig } from "../../src/repo/config.js";
 import { treeFromEntries } from "../../src/core/tree.js";
@@ -72,7 +73,7 @@ void describe("materialize — file→directory transition (adversarial)", () =>
 
       // Target tree has "a/b" — so "a" must become a directory
       const tree = treeFromEntries([["a/b", Buffer.from("child content\n", "utf8")]]);
-      await materialize(workDir, tree);
+      assertOk(await materialize(workDir, tree));
 
       const aStat = await fs.stat(nodePath.join(workDir, "a"));
       assert.ok(aStat.isDirectory(), "ADV-1a: 'a' must be a directory after materialize");
@@ -94,7 +95,7 @@ void describe("materialize — file→directory transition (adversarial)", () =>
 
       // Target tree has "a/b/c/d" — so "a/b" must become a directory
       const tree = treeFromEntries([["a/b/c/d", Buffer.from("deep\n", "utf8")]]);
-      await materialize(workDir, tree);
+      assertOk(await materialize(workDir, tree));
 
       const bStat = await fs.stat(nodePath.join(workDir, "a/b"));
       assert.ok(bStat.isDirectory(), "ADV-1b: 'a/b' must be a directory now");
@@ -119,7 +120,7 @@ void describe("materialize — file→directory transition (adversarial)", () =>
         ["x/child", Buffer.from("x child\n", "utf8")],
         ["y", Buffer.from("y updated\n", "utf8")],
       ]);
-      await materialize(workDir, tree);
+      assertOk(await materialize(workDir, tree));
 
       const xStat = await fs.stat(nodePath.join(workDir, "x"));
       assert.ok(xStat.isDirectory(), "ADV-1c: 'x' must be a directory");
@@ -159,7 +160,7 @@ void describe("materialize — directory→file transition (adversarial)", () =>
 
       // New tree: "foo" is a file — entire directory must be removed
       const tree = treeFromEntries([["foo", Buffer.from("I replaced the dir\n", "utf8")]]);
-      await materialize(workDir, tree);
+      assertOk(await materialize(workDir, tree));
 
       const fooStat = await fs.stat(nodePath.join(workDir, "foo"));
       assert.ok(fooStat.isFile(), "ADV-2a: 'foo' must now be a file");
@@ -192,7 +193,7 @@ void describe("materialize — directory→file transition (adversarial)", () =>
 
       // New tree: "a/b" is a file
       const tree = treeFromEntries([["a/b", Buffer.from("replaced\n", "utf8")]]);
-      await materialize(workDir, tree);
+      assertOk(await materialize(workDir, tree));
 
       const abStat = await fs.stat(nodePath.join(workDir, "a/b"));
       assert.ok(abStat.isFile(), "ADV-2b: 'a/b' must be a file now");
@@ -227,7 +228,7 @@ void describe("materialize — directory→file transition (adversarial)", () =>
 
       // New tree: "parent" is a file
       const tree = treeFromEntries([["parent", Buffer.from("flat file\n", "utf8")]]);
-      await materialize(workDir, tree);
+      assertOk(await materialize(workDir, tree));
 
       const parentStat = await fs.stat(nodePath.join(workDir, "parent"));
       assert.ok(parentStat.isFile(), "ADV-2c: 'parent' must be a file");
@@ -270,7 +271,7 @@ void describe("materialize — no leftover temp files after failure (adversarial
 
       let threw = false;
       try {
-        await materialize(workDir, tree);
+        assertOk(await materialize(workDir, tree));
       } catch {
         threw = true;
       }
@@ -309,7 +310,7 @@ void describe("materialize — no leftover temp files after failure (adversarial
 
       let threw = false;
       try {
-        await materialize(workDir, tree);
+        assertOk(await materialize(workDir, tree));
       } catch {
         threw = true;
       }
@@ -347,7 +348,7 @@ void describe("materialize — no leftover temp files after failure (adversarial
         entries.push([`sub/nested-${i}.txt`, Buffer.from(`nested-${i}\n`, "utf8")]);
       }
       const tree = treeFromEntries(entries);
-      await materialize(workDir, tree);
+      assertOk(await materialize(workDir, tree));
 
       const all = await lsAll(workDir);
       const tempFiles = matchingPaths(all, ".snap-tmp-");
@@ -463,7 +464,7 @@ void describe("readConfig — edge cases (adversarial)", () => {
 
       delete process.env["HOME"];
 
-      const cfg = await readConfig(workDir);
+      const cfg = assertOk(await readConfig(workDir));
       assert.strictEqual(
         cfg.contributorId,
         undefined,
@@ -487,7 +488,7 @@ void describe("readConfig — edge cases (adversarial)", () => {
 
       process.env["HOME"] = "/nonexistent-path-that-does-not-exist-12345";
 
-      const cfg = await readConfig(workDir);
+      const cfg = assertOk(await readConfig(workDir));
       assert.strictEqual(
         cfg.contributorId,
         undefined,
@@ -517,7 +518,7 @@ void describe("readConfig — edge cases (adversarial)", () => {
 
       process.env["HOME"] = fakeHome;
 
-      const cfg = await readConfig(workDir);
+      const cfg = assertOk(await readConfig(workDir));
       assert.strictEqual(
         cfg.contributorId,
         "global@example.com",
@@ -552,7 +553,7 @@ void describe("readConfig — edge cases (adversarial)", () => {
 
       process.env["HOME"] = fakeHome;
 
-      const cfg = await readConfig(workDir);
+      const cfg = assertOk(await readConfig(workDir));
       assert.strictEqual(
         cfg.contributorId,
         "local@example.com",
@@ -584,7 +585,7 @@ void describe("readConfig — edge cases (adversarial)", () => {
 
       process.env["HOME"] = fakeHome;
 
-      const cfg = await readConfig(workDir);
+      const cfg = assertOk(await readConfig(workDir));
       assert.strictEqual(
         cfg.contributorId,
         "global@example.com",
@@ -622,14 +623,12 @@ void describe("readConfig — edge cases (adversarial)", () => {
 
       process.env["HOME"] = fakeHome;
 
-      let threw = false;
-      try {
-        await readConfig(workDir);
-      } catch {
-        threw = true;
-      }
+      const cfg = await readConfig(workDir);
 
-      assert.ok(threw, "ADV-5f: invalid local id must throw an error, not fall through to global");
+      assert.ok(
+        !cfg.ok,
+        "ADV-5f: invalid local id must produce an error, not fall through to global",
+      );
     } finally {
       if (savedHome !== undefined) process.env["HOME"] = savedHome;
       else delete process.env["HOME"];
@@ -652,7 +651,7 @@ void describe("materialize — deep parent directory creation (PLAN.md §7.5 rul
     const workDir = await makeTempDir();
     try {
       const tree = treeFromEntries([["a/b/c/d/e/file.txt", Buffer.from("very deep\n", "utf8")]]);
-      await materialize(workDir, tree);
+      assertOk(await materialize(workDir, tree));
 
       const content = await fs.readFile(nodePath.join(workDir, "a/b/c/d/e/file.txt"), "utf8");
       assert.strictEqual(content, "very deep\n", "ADV-6a: deep file must have correct content");
@@ -670,7 +669,7 @@ void describe("materialize — deep parent directory creation (PLAN.md §7.5 rul
         ["a/b/y.txt", Buffer.from("y\n", "utf8")],
         ["a/c/z.txt", Buffer.from("z\n", "utf8")],
       ]);
-      await materialize(workDir, tree);
+      assertOk(await materialize(workDir, tree));
 
       assert.strictEqual(await fs.readFile(nodePath.join(workDir, "a/b/x.txt"), "utf8"), "x\n");
       assert.strictEqual(await fs.readFile(nodePath.join(workDir, "a/b/y.txt"), "utf8"), "y\n");
@@ -691,11 +690,11 @@ void describe("materialize — deep parent directory creation (PLAN.md §7.5 rul
         ["a/b/c/file2.txt", Buffer.from("f2\n", "utf8")],
         ["keep.txt", Buffer.from("keep\n", "utf8")],
       ]);
-      await materialize(workDir, tree1);
+      assertOk(await materialize(workDir, tree1));
 
       // Now materialize to a tree that only has keep.txt
       const tree2 = treeFromEntries([["keep.txt", Buffer.from("keep\n", "utf8")]]);
-      await materialize(workDir, tree2);
+      assertOk(await materialize(workDir, tree2));
 
       const all = await lsAll(workDir);
       // Only keep.txt should remain (no empty dirs a/, a/b/, a/b/c/)

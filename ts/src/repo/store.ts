@@ -8,6 +8,9 @@ import { parseJSON } from "./json.js";
 import { validateRepository } from "./validate.js";
 import { serializeRepository } from "./json.js";
 import type { Repository } from "./model.js";
+import { errInternalError } from "../errors.js";
+import type { SnapResult } from "../errors.js";
+import { ok, err, attempt, attemptAsync } from "../result.js";
 
 const SNAP_DIR = ".snap";
 const REPO_FILE = "repository.json";
@@ -22,13 +25,13 @@ export function findRepository(cwd: string): string | null {
 
   for (;;) {
     const candidate = nodePath.join(current, SNAP_DIR, REPO_FILE);
-    try {
-      const stat = fs.statSync(candidate);
-      if (stat.isFile()) {
-        return current;
-      }
-    } catch {
-      // Not found at this level
+    // A stat failure just means "no repository at this level".
+    const isFile = attempt(
+      () => fs.statSync(candidate).isFile(),
+      () => false,
+    );
+    if (isFile.ok && isFile.value) {
+      return current;
     }
 
     const parent = nodePath.dirname(current);
@@ -42,20 +45,25 @@ export function findRepository(cwd: string): string | null {
 
 /**
  * Read and parse repository.json from the given directory.
- * Throws SnapError if file is missing, invalid JSON, or fails validation.
+ * Returns an error value if the file is missing, invalid JSON, or fails validation.
  */
-export async function readRepository(dir: string): Promise<Repository> {
+export async function readRepository(dir: string): Promise<SnapResult<Repository>> {
   const repoPath = nodePath.join(dir, SNAP_DIR, REPO_FILE);
-  const text = await fsAsync.readFile(repoPath, "utf8");
-  const data = parseJSON(text);
-  return validateRepository(data);
+
+  const text = await attemptAsync(() => fsAsync.readFile(repoPath, "utf8"), errInternalError);
+  if (!text.ok) return err(text.error);
+
+  const data = parseJSON(text.value);
+  if (!data.ok) return err(data.error);
+
+  return validateRepository(data.value);
 }
 
 /**
  * Atomically write repository.json (same-dir temp replace, no leftover temp files).
  * PLAN.md §7.5 rule 3.
  */
-export async function writeRepository(dir: string, repo: Repository): Promise<void> {
+export async function writeRepository(dir: string, repo: Repository): Promise<SnapResult<void>> {
   const snapDir = nodePath.join(dir, SNAP_DIR);
   const repoPath = nodePath.join(snapDir, REPO_FILE);
   const tempPath = nodePath.join(snapDir, `.snap-tmp-${Math.random().toString(36).slice(2)}`);
@@ -63,15 +71,16 @@ export async function writeRepository(dir: string, repo: Repository): Promise<vo
   const text = serializeRepository(repo);
   const bytes = Buffer.from(text, "utf8");
 
-  try {
+  const written = await attemptAsync(async () => {
     await fsAsync.writeFile(tempPath, bytes);
     await fsAsync.rename(tempPath, repoPath);
-  } catch (err) {
-    try {
-      await fsAsync.unlink(tempPath);
-    } catch {
-      // Ignore cleanup errors
-    }
-    throw err;
+  }, errInternalError);
+
+  if (!written.ok) {
+    // Best-effort cleanup; a failure to remove the temp file is ignored.
+    await attemptAsync(() => fsAsync.unlink(tempPath), errInternalError);
+    return err(written.error);
   }
+
+  return ok(undefined);
 }

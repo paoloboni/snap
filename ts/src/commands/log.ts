@@ -3,6 +3,8 @@
 
 import { findRepository, readRepository } from "../repo/store.js";
 import { errNotARepository } from "../errors.js";
+import type { SnapResult } from "../errors.js";
+import { ok, err } from "../result.js";
 import { formatVersionString } from "../core/version.js";
 import { colorMode } from "../present/mode.js";
 import { S } from "../present/sgr.js";
@@ -31,13 +33,15 @@ function patchResultVector(patch: Patch): ReadonlyMap<string, number> {
  * Terminal: S(36,"●") + " " + S(1,message) + LF + "  " + S(36,version) + " " + S(2,"by") + " " + S(35,author) + LF
  * Entries separated by one extra LF in terminal mode.
  */
-export async function run(cwd: string): Promise<number> {
+export async function run(cwd: string): Promise<SnapResult<number>> {
   const repoDir = findRepository(cwd);
   if (repoDir === null) {
-    throw errNotARepository();
+    return err(errNotARepository());
   }
 
-  const repo = await readRepository(repoDir);
+  const repoResult = await readRepository(repoDir);
+  if (!repoResult.ok) return err(repoResult.error);
+  const repo = repoResult.value;
 
   // We need the canonical integration order from replay.
   // replay() returns the final tree, but we need the ORDER in which patches were integrated.
@@ -50,7 +54,7 @@ export async function run(cwd: string): Promise<number> {
   const patches = [...repo.patches];
 
   if (patches.length === 0) {
-    return 0;
+    return ok(0);
   }
 
   // Sort patches by integration order (same as replay):
@@ -88,7 +92,7 @@ export async function run(cwd: string): Promise<number> {
     }
   }
 
-  return 0;
+  return ok(0);
 }
 
 /**

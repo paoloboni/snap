@@ -7,7 +7,9 @@ import * as fsAsync from "node:fs/promises";
 import * as nodePath from "node:path";
 import { parseJSON } from "./json.js";
 import { validateContributorId } from "../core/contributor.js";
-import { errInvalidContributorId } from "../errors.js";
+import { errInvalidContributorId, errInternalError } from "../errors.js";
+import type { SnapError, SnapResult } from "../errors.js";
+import { ok, err, attemptAsync } from "../result.js";
 
 export type Config = { contributorId?: string };
 
@@ -29,42 +31,45 @@ const GLOBAL_CONFIG_FILE = ".snapconfig.json";
  *
  * Unknown fields are silently ignored when reading (PLAN.md §7.5 rule 9: not validated on read).
  */
-export async function readConfig(repoDir: string): Promise<Config> {
+export async function readConfig(repoDir: string): Promise<SnapResult<Config>> {
   const localPath = nodePath.join(repoDir, SNAP_DIR, LOCAL_CONFIG_FILE);
 
   // Try local config
   const localResult = await tryReadConfigFile(localPath);
   if (localResult.status === "error") {
-    throw localResult.error;
+    return err(localResult.error);
   }
   if (localResult.status === "found" && localResult.contributorId !== undefined) {
     // Local config has a valid id — return it, do NOT read global
-    return { contributorId: localResult.contributorId };
+    return ok({ contributorId: localResult.contributorId });
   }
   // Either local config not found or has no id — fall through to global
 
   // Try global config
   const home = process.env["HOME"];
   if (home === undefined || home === "") {
-    return {};
+    return ok({});
   }
 
   const globalPath = nodePath.join(home, GLOBAL_CONFIG_FILE);
   const globalResult = await tryReadConfigFile(globalPath);
   if (globalResult.status === "error") {
-    throw globalResult.error;
+    return err(globalResult.error);
   }
   if (globalResult.status === "found" && globalResult.contributorId !== undefined) {
-    return { contributorId: globalResult.contributorId };
+    return ok({ contributorId: globalResult.contributorId });
   }
 
-  return {};
+  return ok({});
 }
 
 type ReadResult =
   | { status: "not_found" }
   | { status: "found"; contributorId: string | undefined }
-  | { status: "error"; error: unknown };
+  | { status: "error"; error: SnapError };
+
+/** Distinguishes a missing file from a genuine read failure at the fs boundary. */
+type ReadFailure = { kind: "not_found" } | { kind: "error"; error: SnapError };
 
 /**
  * Try reading a config file. Returns:
@@ -73,34 +78,35 @@ type ReadResult =
  * - "error" if the file is malformed (invalid JSON, duplicate keys, or invalid id)
  */
 async function tryReadConfigFile(filePath: string): Promise<ReadResult> {
-  let text: string;
-  try {
-    text = await fsAsync.readFile(filePath, "utf8");
-  } catch (err) {
-    if (isNotFoundError(err)) {
+  const text = await attemptAsync(
+    () => fsAsync.readFile(filePath, "utf8"),
+    (thrown): ReadFailure =>
+      isNotFoundError(thrown)
+        ? { kind: "not_found" }
+        : { kind: "error", error: errInternalError(thrown) },
+  );
+
+  if (!text.ok) {
+    if (text.error.kind === "not_found") {
       return { status: "not_found" };
     }
-    return { status: "error", error: err };
+    return { status: "error", error: text.error.error };
   }
 
   // Parse JSON (rejects duplicate keys)
-  let data: unknown;
-  try {
-    data = parseJSON(text);
-  } catch (err) {
-    return { status: "error", error: err };
+  const data = parseJSON(text.value);
+  if (!data.ok) {
+    return { status: "error", error: data.error };
   }
 
   // Extract contributor.id — silently ignore unknown fields
-  const id = extractContributorId(data);
+  const id = extractContributorId(data.value);
   if (id === undefined) {
     return { status: "found", contributorId: undefined };
   }
 
   // Validate the id — invalid id is an error, does NOT fall through to global
-  try {
-    validateContributorId(id);
-  } catch {
+  if (!validateContributorId(id).ok) {
     return { status: "error", error: errInvalidContributorId(id) };
   }
 
@@ -111,11 +117,41 @@ async function tryReadConfigFile(filePath: string): Promise<ReadResult> {
  * Write local config to .snap/config.json atomically.
  * Only writes contributor.id; unknown fields are dropped (PLAN.md §7.5 rule 9).
  */
-export async function writeLocalConfig(repoDir: string, config: Config): Promise<void> {
+export async function writeLocalConfig(repoDir: string, config: Config): Promise<SnapResult<void>> {
   const snapDir = nodePath.join(repoDir, SNAP_DIR);
   const configPath = nodePath.join(snapDir, LOCAL_CONFIG_FILE);
   const tempPath = nodePath.join(snapDir, `.snap-tmp-${Math.random().toString(36).slice(2)}`);
 
+  return writeConfigAtomically(tempPath, configPath, config);
+}
+
+/**
+ * Write global config to $HOME/.snapconfig.json atomically.
+ */
+export async function writeGlobalConfig(config: Config): Promise<SnapResult<void>> {
+  const home = process.env["HOME"];
+  if (home === undefined || home === "") {
+    return err(errInternalError(new Error("HOME is not set")));
+  }
+  const globalPath = nodePath.join(home, GLOBAL_CONFIG_FILE);
+  const tempPath = nodePath.join(home, `.snap-tmp-${Math.random().toString(36).slice(2)}`);
+
+  return writeConfigAtomically(tempPath, globalPath, config);
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Serialize the known config fields and install them via a same-directory temp
+ * file, cleaning the temp file up if the write or rename fails.
+ */
+async function writeConfigAtomically(
+  tempPath: string,
+  targetPath: string,
+  config: Config,
+): Promise<SnapResult<void>> {
   // Build minimal config object — only known fields, drop unknowns
   const obj: Record<string, unknown> = {};
   if (config.contributorId !== undefined) {
@@ -125,54 +161,19 @@ export async function writeLocalConfig(repoDir: string, config: Config): Promise
   const text = JSON.stringify(obj, null, 2) + "\n";
   const bytes = Buffer.from(text, "utf8");
 
-  try {
+  const written = await attemptAsync(async () => {
     await fsAsync.writeFile(tempPath, bytes);
-    await fsAsync.rename(tempPath, configPath);
-  } catch (err) {
-    try {
-      await fsAsync.unlink(tempPath);
-    } catch {
-      // Ignore cleanup errors
-    }
-    throw err;
+    await fsAsync.rename(tempPath, targetPath);
+  }, errInternalError);
+
+  if (!written.ok) {
+    // Best-effort cleanup; a failure to remove the temp file is ignored.
+    await attemptAsync(() => fsAsync.unlink(tempPath), errInternalError);
+    return err(written.error);
   }
+
+  return ok(undefined);
 }
-
-/**
- * Write global config to $HOME/.snapconfig.json atomically.
- */
-export async function writeGlobalConfig(config: Config): Promise<void> {
-  const home = process.env["HOME"];
-  if (home === undefined || home === "") {
-    throw new Error("HOME is not set");
-  }
-  const globalPath = nodePath.join(home, GLOBAL_CONFIG_FILE);
-  const tempPath = nodePath.join(home, `.snap-tmp-${Math.random().toString(36).slice(2)}`);
-
-  const obj: Record<string, unknown> = {};
-  if (config.contributorId !== undefined) {
-    obj["contributor"] = { id: config.contributorId };
-  }
-
-  const text = JSON.stringify(obj, null, 2) + "\n";
-  const bytes = Buffer.from(text, "utf8");
-
-  try {
-    await fsAsync.writeFile(tempPath, bytes);
-    await fsAsync.rename(tempPath, globalPath);
-  } catch (err) {
-    try {
-      await fsAsync.unlink(tempPath);
-    } catch {
-      // Ignore cleanup errors
-    }
-    throw err;
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 /**
  * Extract contributor.id from a parsed config value.

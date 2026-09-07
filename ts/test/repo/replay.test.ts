@@ -10,7 +10,8 @@ import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { replay, joinRepositories } from "../../src/repo/replay.js";
 import type { Repository, Patch } from "../../src/repo/model.js";
-import { SnapError } from "../../src/errors.js";
+import type { SnapResult } from "../../src/errors.js";
+import { assertOk, assertErr } from "../helpers/result.js";
 import { emptyTree, treeFromEntries } from "../../src/core/tree.js";
 
 // ---------------------------------------------------------------------------
@@ -49,21 +50,14 @@ function b64(s: string): string {
   return Buffer.from(s).toString("base64");
 }
 
-function throwsSnapError(fn: () => void, substring?: string): void {
-  let threw = false;
-  try {
-    fn();
-  } catch (e) {
-    threw = true;
-    assert.ok(e instanceof SnapError, `expected SnapError, got ${String(e)}`);
-    if (substring !== undefined) {
-      assert.ok(
-        e.message.includes(substring),
-        `expected error message to contain "${substring}", got "${e.message}"`,
-      );
-    }
+function throwsSnapError<T>(result: SnapResult<T>, substring?: string): void {
+  const error = assertErr(result);
+  if (substring !== undefined) {
+    assert.ok(
+      error.message.includes(substring),
+      `expected error message to contain "${substring}", got "${error.message}"`,
+    );
   }
-  assert.ok(threw, "expected function to throw SnapError");
 }
 
 // ---------------------------------------------------------------------------
@@ -73,7 +67,7 @@ function throwsSnapError(fn: () => void, substring?: string): void {
 void describe("replay — empty repository", () => {
   void test("empty repo produces empty tree and no warnings", () => {
     const repo = makeRepo([], []);
-    const { tree, warnings } = replay(repo);
+    const { tree, warnings } = assertOk(replay(repo));
     assert.deepEqual(tree.paths(), []);
     assert.deepEqual(warnings, []);
   });
@@ -89,7 +83,7 @@ void describe("replay — single patch", () => {
       { type: "text", path: "hello.txt", edit: [{ type: "insert", tokens: ["hello\n"] }] },
     ]);
     const repo = makeRepo([["alice@x", 1]], [p]);
-    const { tree, warnings } = replay(repo);
+    const { tree, warnings } = assertOk(replay(repo));
     assert.deepEqual(warnings, []);
     assert.equal(tree.get("hello.txt")?.toString("utf8"), "hello\n");
   });
@@ -100,7 +94,7 @@ void describe("replay — single patch", () => {
       { type: "put", path: "data.bin", content },
     ]);
     const repo = makeRepo([["alice@x", 1]], [p]);
-    const { tree, warnings } = replay(repo);
+    const { tree, warnings } = assertOk(replay(repo));
     assert.deepEqual(warnings, []);
     const got = tree.get("data.bin");
     assert.ok(got !== undefined);
@@ -115,7 +109,7 @@ void describe("replay — single patch", () => {
       { type: "delete", path: "f.txt" },
     ]);
     const repo = makeRepo([["alice@x", 2]], [p1, p2]);
-    const { tree, warnings } = replay(repo);
+    const { tree, warnings } = assertOk(replay(repo));
     assert.deepEqual(warnings, []);
     assert.equal(tree.has("f.txt"), false);
   });
@@ -301,7 +295,7 @@ void describe("replay — test 10 conflict rules (delete-wins, later-put-wins, p
       ],
       [alice, bob, seed],
     );
-    const { tree, warnings } = replay(repo);
+    const { tree, warnings } = assertOk(replay(repo));
     // delete.txt should be absent (bob's delete wins)
     assert.equal(tree.has("delete.txt"), false);
     assert.ok(
@@ -341,7 +335,7 @@ void describe("replay — test 10 conflict rules (delete-wins, later-put-wins, p
       ],
       [alice, bob, seed],
     );
-    const { tree, warnings } = replay(repo);
+    const { tree, warnings } = assertOk(replay(repo));
     // incompatible.txt should have bob's binary (C wins = put-wins)
     const got = tree.get("incompatible.txt");
     assert.ok(got !== undefined);
@@ -383,7 +377,7 @@ void describe("replay — test 10 conflict rules (delete-wins, later-put-wins, p
       ],
       [alice, bob, seed],
     );
-    const { tree, warnings } = replay(repo);
+    const { tree, warnings } = assertOk(replay(repo));
     // later-put.txt should have alice's binary AAE= (incoming put wins = later-put-wins)
     const got = tree.get("later-put.txt");
     assert.ok(got !== undefined);
@@ -426,7 +420,7 @@ void describe("replay — test 10 conflict rules (delete-wins, later-put-wins, p
       ],
       [alice, bob, seed],
     );
-    const { tree, warnings } = replay(repo);
+    const { tree, warnings } = assertOk(replay(repo));
     const got = tree.get("identical.txt");
     assert.ok(got !== undefined);
     assert.equal(got.toString("utf8"), "same\n");
@@ -476,7 +470,7 @@ void describe("replay — test 10 conflict rules (delete-wins, later-put-wins, p
       ],
       [alice, bob, seed],
     );
-    const { warnings } = replay(repo);
+    const { warnings } = assertOk(replay(repo));
     // Warnings should be sorted by path
     const paths = warnings.map((w) => w.path);
     const sortedPaths = [...paths].sort();
@@ -506,7 +500,7 @@ void describe("replay — test 11 namespace conflicts", () => {
       ],
       [alice, bob],
     );
-    const { tree, warnings } = replay(repo);
+    const { tree, warnings } = assertOk(replay(repo));
     assert.equal(tree.get("a")?.toString("utf8"), "ancestor\n");
     assert.equal(tree.has("a/b"), false);
     assert.ok(warnings.some((w) => w.path === "a/b" && w.reason === "namespace-wins"));
@@ -531,7 +525,7 @@ void describe("replay — test 11 namespace conflicts", () => {
       ],
       [alice, bob],
     );
-    const { tree, warnings } = replay(repo);
+    const { tree, warnings } = assertOk(replay(repo));
     // alice is LATER → alice's x/y wins, bob's x is removed
     assert.equal(tree.has("x"), false, "bob's 'x' should be removed by namespace-wins");
     assert.equal(tree.get("x/y")?.toString("utf8"), "descendant\n");
@@ -663,7 +657,7 @@ void describe("replay — test 18 three-way convergence", () => {
       [a, b, c, seed],
     );
 
-    const { tree, warnings } = replay(repo);
+    const { tree, warnings } = assertOk(replay(repo));
     assert.deepEqual(warnings, []);
     const got = tree.get("story.txt");
     assert.ok(got !== undefined, "story.txt should exist");
@@ -739,7 +733,7 @@ void describe("replay — test 09 OT text merge", () => {
       [alice, bob, seed],
     );
 
-    const { tree, warnings } = replay(repo);
+    const { tree, warnings } = assertOk(replay(repo));
     assert.deepEqual(warnings, []);
     const got = tree.get("notes.txt");
     assert.ok(got !== undefined);
@@ -806,7 +800,7 @@ void describe("replay — permutation convergence", () => {
     const results: string[] = [];
     for (const patchOrder of permutations) {
       const repo = makeRepo(frontier, patchOrder);
-      const { tree } = replay(repo);
+      const { tree } = assertOk(replay(repo));
       const content = tree.get("file.txt")?.toString("utf8") ?? "";
       results.push(content);
     }
@@ -858,11 +852,11 @@ void describe("replay — permutation convergence", () => {
       [bob, seed],
     );
 
-    const { repo: merged1 } = joinRepositories(repoA, repoB);
-    const { repo: merged2 } = joinRepositories(repoB, repoA);
+    const { repo: merged1 } = assertOk(joinRepositories(repoA, repoB));
+    const { repo: merged2 } = assertOk(joinRepositories(repoB, repoA));
 
-    const { tree: tree1 } = replay(merged1);
-    const { tree: tree2 } = replay(merged2);
+    const { tree: tree1 } = assertOk(replay(merged1));
+    const { tree: tree2 } = assertOk(replay(merged2));
 
     const content1 = tree1.get("file.txt")?.toString("utf8");
     const content2 = tree2.get("file.txt")?.toString("utf8");
@@ -876,9 +870,9 @@ void describe("replay — permutation convergence", () => {
     ]);
     const repo = makeRepo([["alice@x", 1]], [alice]);
 
-    const { repo: merged } = joinRepositories(repo, repo);
-    const { tree: tree1 } = replay(repo);
-    const { tree: tree2 } = replay(merged);
+    const { repo: merged } = assertOk(joinRepositories(repo, repo));
+    const { tree: tree1 } = assertOk(replay(repo));
+    const { tree: tree2 } = assertOk(replay(merged));
 
     assert.equal(tree1.get("file.txt")?.toString("utf8"), tree2.get("file.txt")?.toString("utf8"));
     // Frontier should be the same
@@ -900,7 +894,7 @@ void describe("replay — error cases", () => {
     ]);
     // Only include the second patch, not the first — incomplete history
     const repo = makeRepo([["alice@x", 2]], [p]);
-    throwsSnapError(() => replay(repo), "cyclic or incomplete patch history");
+    throwsSnapError(replay(repo), "cyclic or incomplete patch history");
   });
 
   void test("unreachable patch (not in causal closure of frontier)", () => {
@@ -913,7 +907,7 @@ void describe("replay — error cases", () => {
     ]);
     // Frontier says alice@x is only at revision 1, but repo has revision 2
     const repo = makeRepo([["alice@x", 1]], [p1, p2]);
-    throwsSnapError(() => replay(repo), "unreachable patch");
+    throwsSnapError(replay(repo), "unreachable patch");
   });
 
   void test("patch collision: same dot with different values", () => {
@@ -927,7 +921,7 @@ void describe("replay — error cases", () => {
     const repoA = makeRepo([["alice@x", 1]], [p1]);
     const repoB = makeRepo([["alice@x", 1]], [p1different]);
 
-    throwsSnapError(() => joinRepositories(repoA, repoB), "patch collision");
+    throwsSnapError(joinRepositories(repoA, repoB), "patch collision");
   });
 
   void test("delete of absent path", () => {
@@ -936,7 +930,7 @@ void describe("replay — error cases", () => {
       { type: "delete", path: "nonexistent.txt" },
     ]);
     const repo = makeRepo([["alice@x", 1]], [p]);
-    throwsSnapError(() => replay(repo), "delete of absent path");
+    throwsSnapError(replay(repo), "delete of absent path");
   });
 });
 
@@ -967,7 +961,7 @@ void describe("replay — later-create-wins", () => {
       ],
       [alice, bob],
     );
-    const { tree, warnings } = replay(repo);
+    const { tree, warnings } = assertOk(replay(repo));
     // alice integrates second (later), so alice's value wins
     const got = tree.get("same.txt")?.toString("utf8");
     assert.equal(got, "alice\n", "later create (alice) should win");
@@ -1001,12 +995,12 @@ void describe("joinRepositories — warning semantics", () => {
     const repoB = makeRepo([["bob@x", 1]], [bob]);
 
     // First merge: alice + bob creates a later-create-wins conflict
-    const { repo: merged1, warnings: w1 } = joinRepositories(repoA, repoB);
+    const { repo: merged1, warnings: w1 } = assertOk(joinRepositories(repoA, repoB));
     assert.equal(w1.length, 1, "first merge should have 1 warning");
     assert.equal(w1[0]?.reason, "later-create-wins");
 
     // Second merge with same remote: warnings still present in replay
-    const { warnings: w2 } = joinRepositories(merged1, repoB);
+    const { warnings: w2 } = assertOk(joinRepositories(merged1, repoB));
     // merged1 already contains all of repoB's patches, so replay produces same warnings
     assert.equal(w2.length, 1, "re-merging same history produces same replay warnings");
   });
@@ -1017,7 +1011,7 @@ void describe("joinRepositories — warning semantics", () => {
     ]);
     const repo = makeRepo([["alice@x", 1]], [alice]);
 
-    const { repo: merged } = joinRepositories(repo, repo);
+    const { repo: merged } = assertOk(joinRepositories(repo, repo));
     assert.equal(merged.frontier.get("alice@x"), 1);
     assert.equal(merged.patches.length, 1);
   });
@@ -1145,7 +1139,7 @@ void describe("replay — RA-001: concurrent patches in base use proper OT", () 
     );
 
     // With the fix: should NOT throw, and result should be "A\nY\nX\nB\nC\nZ\n"
-    const { tree, warnings } = replay(repo);
+    const { tree, warnings } = assertOk(replay(repo));
     assert.deepEqual(warnings, [], "no warnings expected for clean OT scenario");
     const got = tree.get("file.txt");
     assert.ok(got !== undefined, "file.txt must exist");
@@ -1236,7 +1230,7 @@ void describe("replay — RA-001: concurrent patches in base use proper OT", () 
         ],
         [alice, bob, seed],
       );
-      const { tree: tree3, warnings: w3 } = replay(repo3);
+      const { tree: tree3, warnings: w3 } = assertOk(replay(repo3));
       assert.deepEqual(w3, [], "no warnings for seed+alice+bob");
       assert.equal(
         tree3.get("file.txt")?.toString("utf8"),
@@ -1283,7 +1277,7 @@ void describe("replay — RA-001: concurrent patches in base use proper OT", () 
     // Without the fix: charlie's base would be "A\nX\nY\n" only if the naive apply
     // happened to work (it might in this case since alice and bob touch different tokens).
     // The primary regression test is the concurrent-inserts-at-same-position test above.
-    const { tree, warnings } = replay(repo);
+    const { tree, warnings } = assertOk(replay(repo));
     assert.deepEqual(warnings, [], "no warnings for charlie scenario");
     const got = tree.get("file.txt");
     assert.ok(got !== undefined, "file.txt must exist");

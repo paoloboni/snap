@@ -234,14 +234,45 @@ the number of matching paths. Ancestor checks walk the path's segments upward:
 |---|---|---|
 | 0 | Success | SPEC §10 |
 | 1 | Expected error (invalid input, validation failure, precondition not met) | SPEC §10 |
-| 2 | Unexpected internal failure (bug, assertion, unhandled exception) | SPEC §10 |
+| 2 | Unexpected internal failure (bug, assertion, I/O failure) | SPEC §10 |
 
-### SnapError
+### SnapError and Result
 
 `errors.ts` defines `SnapError extends Error` with a `message` string (the
-`snap: <detail>` line without the newline) and no additional fields. Throwing
-a `SnapError` causes `main.ts` to print the message to stderr and exit 1.
-Any other thrown value causes exit 2.
+`snap: <detail>` line without the newline) and an `exitCode` of 1 or 2. It
+extends `Error` only for message ergonomics — a `SnapError` is never thrown.
+
+Snap models failure as data. `result.ts` defines
+
+```ts
+export type Result<T, E> =
+  | { readonly ok: true; readonly value: T }
+  | { readonly ok: false; readonly error: E };
+```
+
+and `errors.ts` re-exports the single alias used throughout the codebase:
+`type SnapResult<T> = Result<T, SnapError>`. Every fallible operation returns
+`SnapResult<T>`; every fallible asynchronous operation returns
+`Promise<SnapResult<T>>` that resolves with the error rather than rejecting.
+Callers propagate with an explicit `if (!r.ok) return err(r.error);`.
+
+`cli/dispatch.ts` converts a failed `SnapResult` into the stderr line plus the
+process exit code (`reportError`), and `main.ts` returns that code.
+
+#### The exception boundary
+
+Node built-ins still throw (`node:fs`, `JSON.parse`) or reject (`node:http`).
+`result.ts` provides the only two functions in the codebase that catch:
+
+- `attempt(fn, onThrow)` — synchronous
+- `attemptAsync(fn, onThrow)` — asynchronous, always resolves
+
+Both take an explicit mapper to a domain error, so Node failures are converted
+to `SnapError` values at the boundary. Every other module under `src/` is both
+throw-free and catch-free. The sole remaining guard is in `main.ts`, which wraps
+the whole run in `attemptAsync(..., errInternalError)` so that a genuine
+programming bug still produces the SPEC §10 exit code 2 rather than an
+unhandled rejection.
 
 ### Error precedence (DEC-015)
 

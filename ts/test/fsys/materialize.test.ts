@@ -8,6 +8,7 @@ import * as nodePath from "node:path";
 import * as os from "node:os";
 
 import { materialize } from "../../src/fsys/materialize.js";
+import { assertOk } from "../helpers/result.js";
 import { emptyTree, treeFromEntries } from "../../src/core/tree.js";
 
 // ---------------------------------------------------------------------------
@@ -65,7 +66,7 @@ void describe("materialize — basic file creation", () => {
         ["hello.txt", Buffer.from("hello\n", "utf8")],
         ["world.txt", Buffer.from("world\n", "utf8")],
       ]);
-      await materialize(workDir, tree);
+      assertOk(await materialize(workDir, tree));
 
       const hello = await fs.readFile(nodePath.join(workDir, "hello.txt"), "utf8");
       const world = await fs.readFile(nodePath.join(workDir, "world.txt"), "utf8");
@@ -83,7 +84,7 @@ void describe("materialize — basic file creation", () => {
         ["a/b/c.txt", Buffer.from("deep\n", "utf8")],
         ["a/d.txt", Buffer.from("sibling\n", "utf8")],
       ]);
-      await materialize(workDir, tree);
+      assertOk(await materialize(workDir, tree));
 
       const deep = await fs.readFile(nodePath.join(workDir, "a/b/c.txt"), "utf8");
       const sibling = await fs.readFile(nodePath.join(workDir, "a/d.txt"), "utf8");
@@ -105,7 +106,7 @@ void describe("materialize — basic file creation", () => {
         '{"format":1,"frontier":[],"patches":[]}\n',
       );
 
-      await materialize(workDir, emptyTree());
+      assertOk(await materialize(workDir, emptyTree()));
 
       // old.txt should be removed
       const oldStat = await statIfExists(nodePath.join(workDir, "old.txt"));
@@ -127,7 +128,7 @@ void describe("materialize — file update (changed bytes)", () => {
       await fs.writeFile(nodePath.join(workDir, "f.txt"), "old content\n");
 
       const tree = treeFromEntries([["f.txt", Buffer.from("new content\n", "utf8")]]);
-      await materialize(workDir, tree);
+      assertOk(await materialize(workDir, tree));
 
       const content = await fs.readFile(nodePath.join(workDir, "f.txt"), "utf8");
       assert.strictEqual(content, "new content\n");
@@ -147,7 +148,7 @@ void describe("materialize — file deletion", () => {
 
       // New tree only has keep.txt
       const tree = treeFromEntries([["keep.txt", Buffer.from("keep\n", "utf8")]]);
-      await materialize(workDir, tree);
+      assertOk(await materialize(workDir, tree));
 
       const keepBuf = await readFileIfExists(nodePath.join(workDir, "keep.txt"));
       assert.ok(keepBuf !== null, "keep.txt should still exist");
@@ -167,7 +168,7 @@ void describe("materialize — file deletion", () => {
       await fs.writeFile(nodePath.join(workDir, "subdir/file.txt"), "data\n");
 
       // Materialize empty tree (no files at all)
-      await materialize(workDir, emptyTree());
+      assertOk(await materialize(workDir, emptyTree()));
 
       const subdirStat = await statIfExists(nodePath.join(workDir, "subdir"));
       assert.strictEqual(subdirStat, null, "subdir should be removed when empty");
@@ -187,7 +188,7 @@ void describe("materialize — directory→file transition", () => {
 
       // New tree has "foo" as a file (not a directory)
       const tree = treeFromEntries([["foo", Buffer.from("I am a file\n", "utf8")]]);
-      await materialize(workDir, tree);
+      assertOk(await materialize(workDir, tree));
 
       const stat = await fs.stat(nodePath.join(workDir, "foo"));
       assert.ok(stat.isFile(), "foo should be a file now, not a directory");
@@ -209,7 +210,7 @@ void describe("materialize — file→directory transition", () => {
 
       // New tree has "bar/child" (so "bar" must become a directory)
       const tree = treeFromEntries([["bar/child", Buffer.from("nested\n", "utf8")]]);
-      await materialize(workDir, tree);
+      assertOk(await materialize(workDir, tree));
 
       const barStat = await fs.stat(nodePath.join(workDir, "bar"));
       assert.ok(barStat.isDirectory(), "bar should now be a directory");
@@ -237,7 +238,7 @@ void describe("materialize — .snap/ is never touched", () => {
       );
 
       // Materialize tree without any files
-      await materialize(workDir, emptyTree());
+      assertOk(await materialize(workDir, emptyTree()));
 
       // .snap/repository.json must still exist
       const repoJson = await fs.readFile(nodePath.join(workDir, ".snap/repository.json"), "utf8");
@@ -253,7 +254,7 @@ void describe("materialize — no leftover temp files after failure", () => {
     const workDir = await makeTempDir();
     try {
       const tree = treeFromEntries([["file.txt", Buffer.from("content\n", "utf8")]]);
-      await materialize(workDir, tree);
+      assertOk(await materialize(workDir, tree));
 
       // Check for any leftover temp files in workDir
       const all = await lsAll(workDir);
@@ -275,7 +276,7 @@ void describe("materialize — no leftover temp files after failure", () => {
         ["a/b/c.txt", Buffer.from("nested\n", "utf8")],
         ["root.txt", Buffer.from("root\n", "utf8")],
       ]);
-      await materialize(workDir, tree);
+      assertOk(await materialize(workDir, tree));
 
       const all = await lsAll(workDir);
       const tempFiles = all.filter((f) => f.includes(".snap-tmp-"));
@@ -296,8 +297,8 @@ void describe("materialize — idempotent application", () => {
         ["sub/c.txt", Buffer.from("ccc\n", "utf8")],
       ]);
 
-      await materialize(workDir, tree);
-      await materialize(workDir, tree);
+      assertOk(await materialize(workDir, tree));
+      assertOk(await materialize(workDir, tree));
 
       const a = await fs.readFile(nodePath.join(workDir, "a.txt"), "utf8");
       const b = await fs.readFile(nodePath.join(workDir, "b.txt"), "utf8");

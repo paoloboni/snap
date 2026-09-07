@@ -7,7 +7,9 @@ import * as http from "node:http";
 import type { Repository } from "../repo/model.js";
 import { validateRepository } from "../repo/validate.js";
 import { parseJSON } from "../repo/json.js";
-import { errHttpRedirect, errInvalidJson } from "../errors.js";
+import { errHttpRedirect, errInvalidJson, errInternalError } from "../errors.js";
+import type { SnapResult } from "../errors.js";
+import { ok, err } from "../result.js";
 
 /**
  * Fetch a remote repository via HTTP GET (exactly one request).
@@ -15,19 +17,25 @@ import { errHttpRedirect, errInvalidJson } from "../errors.js";
  * - Rejects redirects (3xx) with errHttpRedirect
  * - Parses body as JSON and validates as Repository
  */
-export async function fetchRemote(url: string): Promise<Repository> {
+export async function fetchRemote(url: string): Promise<SnapResult<Repository>> {
   const body = await httpGet(url);
-  let raw: unknown;
-  try {
-    raw = parseJSON(body);
-  } catch {
-    throw errInvalidJson();
+  if (!body.ok) return err(body.error);
+
+  const raw = parseJSON(body.value);
+  if (!raw.ok) {
+    // Any parse failure on a remote body surfaces as plain invalid JSON.
+    return err(errInvalidJson());
   }
-  return validateRepository(raw);
+
+  return validateRepository(raw.value);
 }
 
-function httpGet(url: string): Promise<string> {
-  return new Promise((resolve, reject) => {
+/**
+ * Perform the single GET. The returned promise always resolves — transport and
+ * status failures come back as error values rather than rejections.
+ */
+function httpGet(url: string): Promise<SnapResult<string>> {
+  return new Promise((resolve) => {
     const isHttps = url.startsWith("https://");
     const mod = isHttps ? https : http;
 
@@ -37,14 +45,14 @@ function httpGet(url: string): Promise<string> {
       // Handle redirects (3xx)
       if (statusCode >= 300 && statusCode < 400) {
         req.destroy();
-        reject(errHttpRedirect(statusCode));
+        resolve(err(errHttpRedirect(statusCode)));
         return;
       }
 
       // Any non-200 status is an error
       if (statusCode !== 200) {
         req.destroy();
-        reject(errInvalidJson());
+        resolve(err(errInvalidJson()));
         return;
       }
 
@@ -53,16 +61,15 @@ function httpGet(url: string): Promise<string> {
         chunks.push(chunk);
       });
       res.on("end", () => {
-        const body = Buffer.concat(chunks).toString("utf8");
-        resolve(body);
+        resolve(ok(Buffer.concat(chunks).toString("utf8")));
       });
-      res.on("error", (err: Error) => {
-        reject(err);
+      res.on("error", (e: Error) => {
+        resolve(err(errInternalError(e)));
       });
     });
 
-    req.on("error", (err: Error) => {
-      reject(err);
+    req.on("error", (e: Error) => {
+      resolve(err(errInternalError(e)));
     });
   });
 }

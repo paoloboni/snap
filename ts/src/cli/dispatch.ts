@@ -2,7 +2,9 @@
 // SPEC §7, PLAN.md §7.5 rule 4
 
 import type { Command } from "./grammar.js";
-import { SnapError, errInternalError, errSnapColorInvalid } from "../errors.js";
+import { errSnapColorInvalid, errNotARepository } from "../errors.js";
+import type { SnapError, SnapResult } from "../errors.js";
+import { ok, err } from "../result.js";
 import { SNAP_VERSION } from "../build-info.js";
 import * as initCmd from "../commands/init.js";
 import * as configCmd from "../commands/config.js";
@@ -18,17 +20,19 @@ import { findRepository, readRepository } from "../repo/store.js";
 import { colorMode } from "../present/mode.js";
 import { S } from "../present/sgr.js";
 
+const SNAP_COLOR_ERROR_MESSAGE = "snap: SNAP_COLOR must be auto, always, or never";
+
 /**
  * Validate SNAP_COLOR environment variable.
  * SPEC §7.11: must be "auto", "always", "never", or unset.
  * Any other value is an error before command execution.
  */
-function checkSnapColor(): void {
+function checkSnapColor(): SnapResult<void> {
   const val = process.env["SNAP_COLOR"];
   if (val === undefined || val === "auto" || val === "always" || val === "never") {
-    return;
+    return ok(undefined);
   }
-  throw errSnapColorInvalid();
+  return err(errSnapColorInvalid());
 }
 
 /**
@@ -45,36 +49,37 @@ export function writeError(message: string, plain: boolean = false): void {
 }
 
 /**
+ * Report a SnapError on stderr and yield its exit code.
+ * The SNAP_COLOR-invalid error is always reported plain (SPEC §7.11).
+ */
+export function reportError(error: SnapError): number {
+  writeError(error.message, error.message === SNAP_COLOR_ERROR_MESSAGE);
+  return error.exitCode;
+}
+
+/**
  * Dispatch a Command to the appropriate handler.
  * Returns exit code 0/1/2.
  *
  * Error handling:
  * - SnapError with exitCode=1 → print to stderr, return 1
  * - SnapError with exitCode=2 → print to stderr, return 2
- * - Unexpected error → wrap in errInternalError, print to stderr, return 2
  */
 export async function dispatch(cmd: Command, cwd: string): Promise<number> {
-  try {
-    // Check SNAP_COLOR before any command (PLAN.md §7.5 rule 2)
-    // The error for invalid SNAP_COLOR is always plain (SPEC §7.11)
-    checkSnapColor();
-
-    return await routeCommand(cmd, cwd);
-  } catch (e) {
-    if (e instanceof SnapError) {
-      // SNAP_COLOR invalid error → always plain
-      const isSnapColorError = e.message === "snap: SNAP_COLOR must be auto, always, or never";
-      writeError(e.message, isSnapColorError);
-      return e.exitCode;
-    }
-    // Unexpected error
-    const wrapped = errInternalError(e);
-    writeError(wrapped.message);
-    return 2;
+  // Check SNAP_COLOR before any command (PLAN.md §7.5 rule 2)
+  const colorCheck = checkSnapColor();
+  if (!colorCheck.ok) {
+    return reportError(colorCheck.error);
   }
+
+  const result = await routeCommand(cmd, cwd);
+  if (!result.ok) {
+    return reportError(result.error);
+  }
+  return result.value;
 }
 
-async function routeCommand(cmd: Command, cwd: string): Promise<number> {
+async function routeCommand(cmd: Command, cwd: string): Promise<SnapResult<number>> {
   switch (cmd.cmd) {
     case "version": {
       if (colorMode(process.stdout)) {
@@ -83,7 +88,7 @@ async function routeCommand(cmd: Command, cwd: string): Promise<number> {
       } else {
         process.stdout.write(`snap ${SNAP_VERSION}\n`);
       }
-      return 0;
+      return ok(0);
     }
 
     case "init": {
@@ -126,11 +131,12 @@ async function routeCommand(cmd: Command, cwd: string): Promise<number> {
       // serve needs a repo directory
       const repoDir = findRepository(cwd);
       if (repoDir === null) {
-        const { errNotARepository } = await import("../errors.js");
-        throw errNotARepository();
+        return err(errNotARepository());
       }
       // Validate and snapshot the current repository at startup
-      await readRepository(repoDir);
+      const repo = await readRepository(repoDir);
+      if (!repo.ok) return err(repo.error);
+
       return serve(repoDir, cmd.port);
     }
   }
